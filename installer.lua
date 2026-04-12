@@ -30,14 +30,14 @@ local PROGRAMS = {
         name     = "Floor Monitor",
         desc     = "Floor builder status on advanced monitor",
         file     = "floor-builder/floor_monitor.lua",
-        target   = "floor_monitor.lua",
+        target   = "startup/floor_monitor.lua",
         device   = "computer",
     },
     {
         name     = "Floor Pocket",
         desc     = "Floor builder status on pocket computer",
         file     = "floor-builder/floor_pocket.lua",
-        target   = "floor_pocket.lua",
+        target   = "startup/floor_pocket.lua",
         device   = "pocket",
     },
 }
@@ -151,9 +151,14 @@ local ok = download(url, prog.target)
 if ok then
     print()
     setColor(colors.lime)
-    print("Installed! Run with:")
-    setColor(colors.white)
-    print("  " .. prog.target:gsub("%.lua$", ""))
+    if prog.target:find("^startup/") then
+        print("Installed! Will auto-run on")
+        print("  next reboot.")
+    else
+        print("Installed! Run with:")
+        setColor(colors.white)
+        print("  " .. prog.target:gsub("%.lua$", ""))
+    end
 else
     print()
     setColor(colors.red)

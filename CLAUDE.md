@@ -12,7 +12,7 @@ ComputerCraft (CC:Tweaked) turtle programs for Minecraft ATM10 modpack. Two main
 | `floor.lua` | Excavates underground floors (101x101), builds smooth stone shell, installs staggered diagonal lattice lighting. |
 | `floor_monitor.lua` | Advanced monitor display for floor builder status via rednet. |
 | `floor_pocket.lua` | Advanced pocket computer display for floor builder status via rednet. |
-| `installer.lua` | Pastebin-hosted installer that pulls files from GitHub. **Update REPO URL before use.** |
+| `installer.lua` | Pastebin-hosted installer (`hkJJFbTv`) that pulls files from GitHub. Monitor/pocket programs install to `startup/` for auto-run on boot. |
 | `lighting-project.md` | Reference doc: Floor 1 coordinates, lighting pattern math, lessons learned. |
 
 ## Key Technical Decisions (tested in-game)
@@ -77,6 +77,9 @@ All programs wait-and-retry on missing supplies rather than crashing:
 
 ## How to deploy in-game
 1. Push repo to GitHub
-2. Update `REPO` URL in `installer.lua`
-3. Upload `installer.lua` to pastebin
-4. In-game: `pastebin run <CODE>` — select which program to install
+2. In-game: `pastebin run hkJJFbTv` — select which program to install
+3. Monitor/pocket programs install to `startup/` folder and auto-run on boot
+4. If repo URL changes, update `REPO` in `installer.lua` and re-upload to pastebin
+
+### Lua forward declarations
+Functions used before their definition (e.g. `ascendToHome`, `moveToY`, `moveTo` in `ensureFuel`) must be forward-declared with `local funcName` at the top of the movement section, then assigned later with `funcName = function() ... end` instead of `local function funcName()`.

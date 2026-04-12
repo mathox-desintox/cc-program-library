@@ -28,9 +28,9 @@
 -- CONFIGURATION
 ---------------------------------------------
 
-local FLOOR_NUM              = 2 -- which floor to build (2 = first below Floor 1)
-local INTERIOR_HEIGHT        = 8 -- air blocks between floor and ceiling
-local BUFFER_LAYERS          = 3 -- solid blocks between floors
+local FLOOR_NUM              = 2  -- which floor to build (2 = first below Floor 1)
+local INTERIOR_HEIGHT        = 11 -- air blocks between floor and ceiling
+local BUFFER_LAYERS          = 3  -- solid blocks between floors
 
 -- World coordinates (Floor 1 reference)
 local FLOOR1_FLOOR_Y         = 21
@@ -59,9 +59,9 @@ local LIGHT_NAME             = "simplylight:illuminant_black_block_on"
 local FUEL_ITEM              = "minecraft:coal"
 
 -- Inventory thresholds
-local DUMP_THRESHOLD         = 12 -- dump when this many slots occupied
+local DUMP_THRESHOLD         = 12  -- dump when this many slots occupied
 local MIN_FUEL               = 500 -- refuel when below this
-local STONE_RESERVE          = 16 -- keep stone in this slot for liquid handling
+local STONE_RESERVE          = 16  -- keep stone in this slot for liquid handling
 
 -- Rednet
 local REDNET_PROTOCOL        = "mathox_base_floor_builder_v1"
@@ -78,8 +78,8 @@ local PROGRESS_FILE          = "floor_progress"
 local STRIDE                 = INTERIOR_HEIGHT + 2 + BUFFER_LAYERS
 local CEILING_Y              = FLOOR1_FLOOR_Y - BUFFER_LAYERS - 1 - (FLOOR_NUM - 2) * STRIDE
 local FLOOR_Y                = CEILING_Y - INTERIOR_HEIGHT - 1
-local DIG_TOP_Y              = FLOOR1_FLOOR_Y - 1                  -- first Y to dig (just below Floor 1 floor)
-local DIG_BOT_Y              = FLOOR_Y                             -- last Y to dig
+local DIG_TOP_Y              = FLOOR1_FLOOR_Y - 1                            -- first Y to dig (just below Floor 1 floor)
+local DIG_BOT_Y              = FLOOR_Y                                       -- last Y to dig
 local WALL_LIGHT_Y           = math.floor((FLOOR_Y + 1 + CEILING_Y - 1) / 2) -- midpoint of interior
 
 -- Dig passes (3 layers each, top to bottom)
@@ -193,6 +193,10 @@ end
 -- MOVEMENT
 ---------------------------------------------
 
+-- Forward declarations (used by ensureFuel before definition)
+local ascendToHome
+local moveToY, moveToX, moveToZ, moveTo
+
 local function turnRight()
     turtle.turnRight()
     facing = (facing + 1) % 4
@@ -236,7 +240,7 @@ local function ensureFuel(min)
         local rx, ry, rz, rf = x, y, z, facing
         ascendToHome()
         moveToY(HOME_Y + 1) -- coal chest level
-        face(1)              -- south
+        face(1)             -- south
         while turtle.getFuelLevel() < min do
             local sucked = false
             for _ = 1, 4 do
@@ -309,28 +313,28 @@ local function goDown()
     error("Stuck down at " .. x .. "," .. y .. "," .. z)
 end
 
-local function moveToY(ty)
+moveToY = function(ty)
     while y < ty do goUp() end
     while y > ty do goDown() end
 end
 
-local function moveToX(tx)
+moveToX = function(tx)
     if tx > x then face(0) elseif tx < x then face(2) end
     while x ~= tx do fwd() end
 end
 
-local function moveToZ(tz)
+moveToZ = function(tz)
     if tz > z then face(1) elseif tz < z then face(3) end
     while z ~= tz do fwd() end
 end
 
-local function moveTo(tx, ty, tz)
+moveTo = function(tx, ty, tz)
     moveToY(ty)
     moveToX(tx)
     moveToZ(tz)
 end
 
-local function ascendToHome()
+ascendToHome = function()
     -- Move to shaft column at current Y, then ascend
     moveToX(SHAFT_X)
     moveToZ(SHAFT_Z)

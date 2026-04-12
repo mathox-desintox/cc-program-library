@@ -2,6 +2,8 @@
 
 ComputerCraft (CC:Tweaked) turtle programs for Minecraft ATM10 modpack.
 
+> **Note:** These programs are heavily opinionated for my specific base layout, coordinate system, and mod setup. They will likely require updating (coordinates, dimensions, item names, chest positions, etc.) before use in a different world.
+
 ## Projects
 
 ### [Farm Builder](farm-builder/)
@@ -24,7 +26,7 @@ Automated underground floor excavation system. A turtle digs out and finishes la
 
 **Runs on:** Advanced Turtle (pickaxe)
 
-Includes companion display programs:
+Includes companion display programs (auto-run on boot when installed via the installer):
 - `floor_monitor.lua` — status display for advanced monitors
 - `floor_pocket.lua` — status display for pocket computers
 
