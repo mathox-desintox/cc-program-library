@@ -140,7 +140,7 @@ local function loadState()
     while true do
         local line = f.readLine()
         if not line then break end
-        local k, v = line:match("^(%w+)=(.+)$")
+        local k, v = line:match("^([%w_]+)=(.+)$")
         if k and v then
             state[k] = tonumber(v) or v
         end
