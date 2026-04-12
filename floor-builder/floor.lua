@@ -172,35 +172,40 @@ end
 
 -- Stats tracking for progress display
 local stats = {
-    blocks_broken  = 0,
-    blocks_total   = 0,
-    blocks_placed  = 0,
-    place_total    = 0,
-    lights_placed  = 0,
-    lights_total   = 0,
-    phase_start    = 0,  -- os.clock() when phase began
+    blocks_broken    = 0,
+    blocks_total     = 0,
+    blocks_placed    = 0,
+    place_total      = 0,
+    lights_placed    = 0,
+    lights_total     = 0,
+    program_start    = 0,  -- os.clock() when program began (set once)
+    cumulative_done  = 0,  -- total items processed across all phases
+    cumulative_total = 0,  -- total items planned across all phases
 }
 
 local lastBroadcast = 0
 local BROADCAST_INTERVAL = 2 -- seconds between auto-broadcasts
 
 local function computeETA()
-    local elapsed = os.clock() - stats.phase_start
-    local done, total = 0, 0
+    local elapsed = os.clock() - stats.program_start
+    -- Current phase done/total
+    local phase_done, phase_total = 0, 0
     if stats.blocks_total > 0 then
-        done = stats.blocks_broken
-        total = stats.blocks_total
+        phase_done = stats.blocks_broken
+        phase_total = stats.blocks_total
     elseif stats.place_total > 0 then
-        done = stats.blocks_placed
-        total = stats.place_total
+        phase_done = stats.blocks_placed
+        phase_total = stats.place_total
     elseif stats.lights_total > 0 then
-        done = stats.lights_placed
-        total = stats.lights_total
+        phase_done = stats.lights_placed
+        phase_total = stats.lights_total
     end
-    if done > 0 and total > 0 then
-        local rate = done / elapsed  -- items per second
-        local remaining = total - done
-        return math.floor(remaining / rate)
+    -- Use cumulative work for rate smoothing (avoids refuel/dump spikes)
+    local total_done = stats.cumulative_done + phase_done
+    local total_remaining = (stats.cumulative_total + phase_total) - total_done
+    if total_done > 0 and total_remaining > 0 then
+        local rate = total_done / elapsed
+        return math.floor(total_remaining / rate)
     end
     return nil
 end
@@ -1112,10 +1117,31 @@ local function phaseIndex(name)
 end
 
 local function runFromPhase(fromName, toName)
+    stats.program_start = os.clock()
+    stats.cumulative_done = 0
+    stats.cumulative_total = 0
     local from = phaseIndex(fromName or state.phase)
     local to = toName and phaseIndex(toName) or #PHASES
     for i = from, to do
         if phaseIndex(state.phase) <= i then
+            -- Accumulate previous phase work before starting next
+            if stats.blocks_total > 0 then
+                stats.cumulative_done = stats.cumulative_done + stats.blocks_broken
+                stats.cumulative_total = stats.cumulative_total + stats.blocks_total
+            elseif stats.place_total > 0 then
+                stats.cumulative_done = stats.cumulative_done + stats.blocks_placed
+                stats.cumulative_total = stats.cumulative_total + stats.place_total
+            elseif stats.lights_total > 0 then
+                stats.cumulative_done = stats.cumulative_done + stats.lights_placed
+                stats.cumulative_total = stats.cumulative_total + stats.lights_total
+            end
+            -- Reset per-phase counters
+            stats.blocks_broken = 0
+            stats.blocks_total = 0
+            stats.blocks_placed = 0
+            stats.place_total = 0
+            stats.lights_placed = 0
+            stats.lights_total = 0
             PHASES[i].fn()
         end
     end
