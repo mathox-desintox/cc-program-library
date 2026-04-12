@@ -51,11 +51,8 @@ local function header()
     term.clear()
     term.setCursorPos(1, 1)
     setColor(colors.yellow)
-    print("================================")
-    print("  MA Farm Installer")
-    print("================================")
+    print("== MA Installer ==")
     setColor(colors.white)
-    print()
 end
 
 local function download(url, path)
@@ -80,32 +77,70 @@ end
 -- Main
 header()
 
--- Show menu
-for i, prog in ipairs(PROGRAMS) do
-    setColor(colors.cyan)
-    write("  " .. i .. ") ")
-    setColor(colors.white)
-    write(prog.name)
-    setColor(colors.gray)
-    print("  [" .. prog.device .. "]")
-    setColor(colors.lightGray)
-    print("     " .. prog.desc)
+-- Scrollable menu
+local function menu(items)
+    local sel = 1
+    local _, h = term.getSize()
+    local maxVisible = h - 3 -- room for header + footer
+    while true do
+        term.clear()
+        term.setCursorPos(1, 1)
+        setColor(colors.yellow)
+        print("== MA Installer ==")
+
+        local total = #items
+        local offset = 0
+        if total > maxVisible then
+            offset = math.min(sel - 1, total - maxVisible)
+        end
+
+        for i = 1, math.min(maxVisible, total) do
+            local idx = i + offset
+            local prog = items[idx]
+            if idx == sel then
+                setColor(colors.black)
+                term.setBackgroundColor(colors.white)
+            else
+                setColor(colors.white)
+                term.setBackgroundColor(colors.black)
+            end
+            term.clearLine()
+            write(" " .. prog.name)
+            if idx == sel then
+                setColor(colors.gray)
+            else
+                setColor(colors.gray)
+            end
+            print(" [" .. prog.device .. "]")
+        end
+
+        term.setBackgroundColor(colors.black)
+        if total > maxVisible then
+            setColor(colors.gray)
+            print(" (" .. sel .. "/" .. total .. ")")
+        end
+
+        setColor(colors.lightGray)
+        term.setCursorPos(1, h)
+        write("Up/Down=navigate Enter=select")
+
+        local evt, key = os.pullEvent("key")
+        if key == keys.up and sel > 1 then
+            sel = sel - 1
+        elseif key == keys.down and sel < total then
+            sel = sel + 1
+        elseif key == keys.enter then
+            term.setBackgroundColor(colors.black)
+            return sel
+        end
+    end
 end
 
-print()
-setColor(colors.yellow)
-write("Select program (1-" .. #PROGRAMS .. "): ")
-setColor(colors.white)
-
-local choice = tonumber(read())
-if not choice or choice < 1 or choice > #PROGRAMS then
-    setColor(colors.red)
-    print("Invalid choice.")
-    return
-end
-
+local choice = menu(PROGRAMS)
 local prog = PROGRAMS[choice]
-print()
+
+term.clear()
+term.setCursorPos(1, 1)
 setColor(colors.white)
 print("Installing: " .. prog.name)
 print()
