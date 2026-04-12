@@ -28,7 +28,9 @@ Automated underground floor excavation system. A turtle digs out and finishes la
 
 Includes companion display programs (auto-run on boot when installed via the installer):
 - `floor_monitor.lua` — status display for advanced monitors
-- `floor_pocket.lua` — status display for pocket computers
+- `floor_pocket.lua` — status display for pocket computers (multi-page, tap to navigate)
+
+> **Important:** Use **ender modems** (not regular wireless modems) on both the turtle and monitor/pocket computers. Regular modems have a ~64 block range and will lose connection when you walk away, even in force-loaded chunks.
 
 ## Quick Install (In-Game)
 
