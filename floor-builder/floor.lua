@@ -695,12 +695,33 @@ local function phaseDig()
     local area_d = AREA_Z_MAX - AREA_Z_MIN + 1
     local blocks_per_pass = area_w * area_d  -- positions per pass (each digs up to 2 blocks)
 
-    -- Estimate total blocks (positions * layers_per_pass * num_passes)
-    stats.blocks_total = blocks_per_pass * #DIG_PASSES
+    -- Estimate total blocks: each pass position digs 1 (nav) + dig_up + dig_down
+    local total_blocks = 0
+    for _, p in ipairs(DIG_PASSES) do
+        local layers = 1  -- nav layer
+        if p.dig_up then layers = layers + 1 end
+        if p.dig_down then layers = layers + 1 end
+        total_blocks = total_blocks + blocks_per_pass * layers
+    end
+    stats.blocks_total = total_blocks
     -- Estimate already done from resume
-    local done_passes = start_pass - 1
-    local done_rows = start_row - AREA_Z_MIN
-    stats.blocks_broken = done_passes * blocks_per_pass + done_rows * area_w
+    local done_blocks = 0
+    for pi = 1, start_pass - 1 do
+        local p = DIG_PASSES[pi]
+        local layers = 1
+        if p.dig_up then layers = layers + 1 end
+        if p.dig_down then layers = layers + 1 end
+        done_blocks = done_blocks + blocks_per_pass * layers
+    end
+    -- Partial pass: estimate from rows completed
+    if start_pass <= #DIG_PASSES then
+        local p = DIG_PASSES[start_pass]
+        local layers = 1
+        if p.dig_up then layers = layers + 1 end
+        if p.dig_down then layers = layers + 1 end
+        done_blocks = done_blocks + (start_row - AREA_Z_MIN) * area_w * layers
+    end
+    stats.blocks_broken = done_blocks
     stats.phase_start = os.clock()
 
     for pi = start_pass, #DIG_PASSES do
@@ -727,21 +748,24 @@ local function phaseDig()
                 moveToX(rx)
 
                 -- Clear above and below
+                local dug = 1  -- nav layer (cleared by fwd movement)
                 if pass.dig_up then
                     handleLiquid("up")
                     while turtle.detectUp() do
                         turtle.digUp(); sleep(0.05)
                     end
+                    dug = dug + 1
                 end
                 if pass.dig_down then
                     handleLiquid("down")
                     while turtle.detectDown() do
                         turtle.digDown(); sleep(0.05)
                     end
+                    dug = dug + 1
                 end
                 -- Also check forward for liquids before next move
                 handleLiquid("forward")
-                stats.blocks_broken = stats.blocks_broken + 1
+                stats.blocks_broken = stats.blocks_broken + dug
 
                 -- Dump if inventory is getting full
                 if needsDump() then
