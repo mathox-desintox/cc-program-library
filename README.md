@@ -30,10 +30,9 @@ Includes companion display programs:
 
 ## Quick Install (In-Game)
 
-1. Get the installer pastebin code (see below)
-2. On any CC computer/turtle, run:
+1. On any CC computer/turtle, run:
    ```
-   pastebin run <CODE>
+   pastebin run hkJJFbTv
    ```
 3. Select the program you want to install
 4. Run the installed program
@@ -42,10 +41,7 @@ Includes companion display programs:
 
 ### Hosting the installer
 
-1. Clone or fork this repo
-2. The `REPO` URL in [installer.lua](installer.lua) is already set to this repo
-3. Upload `installer.lua` to [pastebin.com](https://pastebin.com)
-4. Use the pastebin code in-game
+The installer is hosted on pastebin at `hkJJFbTv` (set to never expire). If you fork this repo and need to re-upload, update the `REPO` URL in [installer.lua](installer.lua) first.
 
 ### Manual install
 
