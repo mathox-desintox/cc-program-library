@@ -760,6 +760,26 @@ local function phaseDig()
 
         local z_start = (pi == start_pass) and start_row or AREA_Z_MIN
 
+        -- Helper: dig up and down at current position
+        local function digColumn()
+            local dug = 0
+            if pass.dig_up then
+                handleLiquid("up")
+                while turtle.detectUp() do
+                    turtle.digUp(); sleep(0.05)
+                end
+                dug = dug + 1
+            end
+            if pass.dig_down then
+                handleLiquid("down")
+                while turtle.detectDown() do
+                    turtle.digDown(); sleep(0.05)
+                end
+                dug = dug + 1
+            end
+            return dug
+        end
+
         for rz = z_start, AREA_Z_MAX do
             local row_idx = rz - AREA_Z_MIN
             local going_east = (row_idx % 2 == 0)
@@ -768,26 +788,14 @@ local function phaseDig()
             local x_step = going_east and 1 or -1
 
             moveToZ(rz)
+            -- Clear the column at the row-start position before entering for loop
+            stats.blocks_broken = stats.blocks_broken + digColumn() + 1
 
             for rx = x_from, x_to, x_step do
                 moveToX(rx)
 
-                -- Clear above and below
-                local dug = 1  -- nav layer (cleared by fwd movement)
-                if pass.dig_up then
-                    handleLiquid("up")
-                    while turtle.detectUp() do
-                        turtle.digUp(); sleep(0.05)
-                    end
-                    dug = dug + 1
-                end
-                if pass.dig_down then
-                    handleLiquid("down")
-                    while turtle.detectDown() do
-                        turtle.digDown(); sleep(0.05)
-                    end
-                    dug = dug + 1
-                end
+                -- Clear above and below (nav layer already cleared by fwd movement)
+                local dug = digColumn() + 1
                 -- Also check forward for liquids before next move
                 handleLiquid("forward")
                 stats.blocks_broken = stats.blocks_broken + dug
@@ -798,6 +806,9 @@ local function phaseDig()
                     checkAndRefuel()
                     moveTo(rx2, ry2, rz2)
                     face(rf2)
+                    -- Re-clear column after dump trip — return path may have passed
+                    -- through undug caves leaving stale blocks above/below
+                    digColumn()
                 end
             end
 
