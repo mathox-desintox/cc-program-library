@@ -111,6 +111,7 @@ local DZ      = { [0] = 0, [1] = 1, [2] = 0, [3] = -1 }
 
 local state   = {
     phase = "dig",
+    mode = "build",
     dig_pass = 1,
     row_z = AREA_Z_MIN,
     wall_y = FLOOR_Y + 1,
@@ -1204,14 +1205,19 @@ end
 local args = { ... }
 
 local function main()
-    local mode = args[1] or "build"
-
-    if mode == "status" then
+    if args[1] == "status" then
         printStatus()
         return
     end
 
     loadUptime()
+
+    -- Load saved progress (or start fresh)
+    local resumed = loadState()
+
+    -- Determine mode: explicit arg > saved mode > "build"
+    local mode = args[1] or (resumed and state.mode) or "build"
+    state.mode = mode
 
     print("==========================================")
     print("  Underground Floor Builder")
@@ -1225,8 +1231,6 @@ local function main()
     print("==========================================")
     print()
 
-    -- Load saved progress (or start fresh)
-    local resumed = loadState()
     if resumed then
         print("Resuming from: phase=" .. state.phase ..
             " pos=" .. state.x .. "," .. state.y .. "," .. state.z)

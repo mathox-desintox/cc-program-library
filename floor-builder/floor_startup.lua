@@ -36,4 +36,5 @@ while true do
     end
 end
 
-shell.run("floor", "build")
+-- Run with no args so main() uses the saved mode from floor_progress
+shell.run("floor")
