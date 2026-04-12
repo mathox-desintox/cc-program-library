@@ -33,6 +33,8 @@ Includes companion programs (auto-run on boot when installed via the installer):
 
 > **Important:** Use **ender modems** (not regular wireless modems) on both the turtle and monitor/pocket computers. Regular modems have a ~64 block range and will lose connection when you walk away, even in force-loaded chunks.
 
+> **Recommended:** Set up a GPS constellation so the turtle can recover its exact position after a crash or unexpected reboot. On startup, the floor builder calls `gps.locate()` to get its actual world coordinates and detects its facing by moving one block. This prevents the turtle from getting "lost" if it stopped mid-navigation (going home to dump/refuel). See the [CC:Tweaked GPS setup guide](https://tweaked.cc/guide/gps_setup.html). If GPS is unavailable, the turtle falls back to its saved state file.
+
 ## Quick Install (In-Game)
 
 1. On any CC computer/turtle, run:

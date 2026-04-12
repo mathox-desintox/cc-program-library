@@ -72,6 +72,13 @@ All programs wait-and-retry on missing supplies rather than crashing:
 - Liquid encountered without stone → go home, restock, return to position
 - No modem → fatal error (monitoring is required for floor.lua)
 
+### Position tracking & GPS recovery
+- Turtle tracks its own `x, y, z, facing` via relative movement (`turtle.forward()` + `DX/DZ` tables)
+- `saveState()` is called after **every** successful movement (`fwd`, `goUp`, `goDown`, `turnRight`, `turnLeft`) so the state file always reflects actual physical position
+- On startup, `localizeGPS()` calls `gps.locate(3)` to get ground-truth coordinates and overrides the saved x/y/z
+- Facing detection: turtle tries `turtle.forward()`, compares GPS before/after to compute facing from Δx/Δz, then `turtle.back()`. Falls back to saved facing if GPS unavailable or forward is blocked
+- Works with ender modems only (regular modems can't reach a GPS constellation from far away)
+
 ### Rednet protocol & broadcasting
 - `mathox_base_floor_builder_v1` — unique to avoid conflicts on multiplayer server
 - All advanced computers/monitors/pocket computers (full 16-color support)

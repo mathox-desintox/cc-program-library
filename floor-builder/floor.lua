@@ -183,6 +183,78 @@ end
 
 local modemSide = nil
 
+---------------------------------------------
+-- GPS LOCALIZATION
+---------------------------------------------
+
+-- Try to locate via GPS. Returns x, y, z or nil if GPS unavailable.
+local function gpsLocate()
+    if not gps or not gps.locate then return nil end
+    local gx, gy, gz = gps.locate(3)
+    if not gx then return nil end
+    return gx, gy, gz
+end
+
+-- Determine the turtle's current facing by moving forward one block via GPS delta.
+-- Returns the new facing (0-3) or nil if detection failed.
+-- Leaves the turtle at its original position.
+local function detectFacingGPS()
+    local gx1, _, gz1 = gpsLocate()
+    if not gx1 then return nil end
+
+    -- Try to move forward, turning right if blocked
+    local turns = 0
+    while not turtle.forward() do
+        if turtle.detect() then
+            return nil  -- can't determine without digging
+        end
+        turtle.turnRight()
+        turns = turns + 1
+        if turns >= 4 then return nil end
+    end
+
+    local gx2, _, gz2 = gpsLocate()
+    if not gx2 then
+        turtle.back()
+        return nil
+    end
+
+    local dx, dz = gx2 - gx1, gz2 - gz1
+    local detectedFacing
+    if dx == 1 then detectedFacing = 0        -- east
+    elseif dz == 1 then detectedFacing = 1    -- south
+    elseif dx == -1 then detectedFacing = 2   -- west
+    elseif dz == -1 then detectedFacing = 3   -- north
+    end
+
+    turtle.back()
+    return detectedFacing
+end
+
+-- Full GPS localization: sets x, y, z, facing from actual world position.
+-- Returns true on success, false if GPS unavailable.
+local function localizeGPS()
+    local gx, gy, gz = gpsLocate()
+    if not gx then
+        print("  GPS unavailable — using saved position")
+        return false
+    end
+    print("  GPS position: " .. gx .. "," .. gy .. "," .. gz)
+    local newFacing = detectFacingGPS()
+    if newFacing == nil then
+        print("  Facing detection failed — keeping saved facing")
+    else
+        print("  GPS facing: " .. newFacing)
+        facing = newFacing
+    end
+    x, y, z = gx, gy, gz
+    return true
+end
+
+---------------------------------------------
+-- REDNET BROADCASTING
+---------------------------------------------
+
 local function initRednet()
     local modem = peripheral.find("modem")
     if not modem then
@@ -1251,6 +1323,9 @@ local function main()
         print("Resuming from: phase=" .. state.phase ..
             " pos=" .. state.x .. "," .. state.y .. "," .. state.z)
     end
+
+    -- Verify actual position via GPS (falls back to saved state if unavailable)
+    localizeGPS()
 
     -- Bootstrap fuel: if turtle can't reach the fuel chest, ask for manual fuel
     if turtle.getFuelLevel() ~= "unlimited" and turtle.getFuelLevel() < MIN_FUEL then
