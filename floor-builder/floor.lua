@@ -274,11 +274,13 @@ local moveToY, moveToX, moveToZ, moveTo
 local function turnRight()
     turtle.turnRight()
     facing = (facing + 1) % 4
+    pcall(saveState)
 end
 
 local function turnLeft()
     turtle.turnLeft()
     facing = (facing - 1) % 4
+    pcall(saveState)
 end
 
 local function face(dir)
@@ -346,6 +348,7 @@ local function fwd()
         if turtle.forward() then
             x = x + DX[facing]
             z = z + DZ[facing]
+            pcall(saveState)  -- persist actual position on every move
             tickBroadcast()
             return true
         end
@@ -363,6 +366,7 @@ local function goUp()
     for attempt = 1, 60 do
         if turtle.up() then
             y = y + 1
+            pcall(saveState)
             tickBroadcast()
             return true
         end
@@ -379,6 +383,7 @@ local function goDown()
     for attempt = 1, 60 do
         if turtle.down() then
             y = y - 1
+            pcall(saveState)
             tickBroadcast()
             return true
         end
