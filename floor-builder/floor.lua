@@ -68,6 +68,7 @@ local REDNET_PROTOCOL        = "mathox_base_floor_builder_v1"
 
 -- Progress file
 local PROGRESS_FILE          = "floor_progress"
+local UPTIME_FILE            = "floor_uptime"
 
 ---------------------------------------------
 -- COMPUTED Y LEVELS
@@ -155,6 +156,27 @@ local function clearState()
 end
 
 ---------------------------------------------
+-- UPTIME TRACKING
+---------------------------------------------
+
+local priorUptime = 0  -- accumulated from previous runs
+
+local function loadUptime()
+    if fs.exists(UPTIME_FILE) then
+        local f = fs.open(UPTIME_FILE, "r")
+        priorUptime = tonumber(f.readAll()) or 0
+        f.close()
+    end
+end
+
+local function saveUptime(sessionStart)
+    local total = priorUptime + (os.clock() - (sessionStart or 0))
+    local f = fs.open(UPTIME_FILE, "w")
+    f.write(tostring(total))
+    f.close()
+end
+
+---------------------------------------------
 -- REDNET BROADCASTING
 ---------------------------------------------
 
@@ -223,6 +245,8 @@ local function broadcast(extra)
         light_idx = state.light_idx,
         fuel      = turtle.getFuelLevel(),
         pos       = { x = x, y = y, z = z },
+        uptime    = stats.program_start > 0 and (os.clock() - stats.program_start) or 0,
+        total_uptime = priorUptime + (stats.program_start > 0 and (os.clock() - stats.program_start) or 0),
         stats     = stats,
     }
     if extra then
@@ -1166,6 +1190,8 @@ local function runFromPhase(fromName, toName)
             stats.place_total = 0
             stats.lights_placed = 0
             stats.lights_total = 0
+            -- Save uptime between phases
+            saveUptime(stats.program_start)
             PHASES[i].fn()
         end
     end
@@ -1184,6 +1210,8 @@ local function main()
         printStatus()
         return
     end
+
+    loadUptime()
 
     print("==========================================")
     print("  Underground Floor Builder")
@@ -1251,6 +1279,7 @@ local function main()
     ascendToHome()
     face(HOME_FACING)
     clearState()
+    saveUptime(stats.program_start)
     broadcast({ event = "all_complete" })
     print()
     print("==========================================")
@@ -1263,5 +1292,6 @@ if not ok then
     print("ERROR: " .. tostring(err))
     -- Save state on crash so we can resume
     pcall(saveState)
+    pcall(saveUptime, stats.program_start)
     pcall(broadcast, { event = "error", message = tostring(err) })
 end

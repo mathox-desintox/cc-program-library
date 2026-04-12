@@ -32,7 +32,7 @@ print("Listening on: " .. PROTOCOL)
 -- State
 local last = nil
 local lastTime = 0
-local startTime = os.clock()
+
 
 -- Phase display names and colors
 local PHASE_INFO = {
@@ -108,33 +108,41 @@ local function drawBar(line, label, value, maxVal, fg, bg)
     mon.write(pctStr)
 end
 
-local function drawPhaseTimeline(line, currentPhase)
-    if line > h then return end
+local function drawPhaseList(startLine, currentPhase)
     local currentIdx = 0
     for i, p in ipairs(PHASE_ORDER) do
         if p == currentPhase then currentIdx = i end
     end
+    -- "done" phase means all are complete
+    if currentPhase == "done" then currentIdx = #PHASE_ORDER + 1 end
 
-    mon.setCursorPos(1, line)
-    mon.setBackgroundColor(colors.black)
+    local line = startLine
     for i, p in ipairs(PHASE_ORDER) do
+        if line > h then return line end
         local info = PHASE_INFO[p]
-        local short = info.label:sub(1, 1)
+        local marker, fg, bg
         if i < currentIdx then
-            mon.setBackgroundColor(colors.green)
-            mon.setTextColor(colors.white)
+            marker = " [x] "
+            fg = colors.lime
+            bg = colors.black
         elseif i == currentIdx then
-            mon.setBackgroundColor(info.color)
-            mon.setTextColor(colors.black)
+            marker = " >>> "
+            fg = colors.black
+            bg = info.color
         else
-            mon.setBackgroundColor(colors.gray)
-            mon.setTextColor(colors.lightGray)
+            marker = " [ ] "
+            fg = colors.gray
+            bg = colors.black
         end
-        local slotW = math.floor(w / #PHASE_ORDER)
-        local padded = short .. string.rep(" ", slotW - 1)
-        mon.write(padded)
+        mon.setCursorPos(1, line)
+        mon.setBackgroundColor(bg)
+        mon.setTextColor(fg)
+        local text = marker .. info.label
+        mon.write(text .. string.rep(" ", w - #text))
+        line = line + 1
     end
     mon.setBackgroundColor(colors.black)
+    return line
 end
 
 local function drawScreen()
@@ -164,11 +172,11 @@ local function drawScreen()
         writeLine(4, " NO UPDATE for " .. formatTime(age), colors.white, colors.red)
     end
 
-    -- Phase timeline
-    drawPhaseTimeline(6, d.phase)
+    -- Phase list
+    local line = drawPhaseList(6, d.phase)
+    line = line + 1
 
     -- Phase-specific progress
-    local line = 8
     local s = d.stats or {}
 
     if d.phase == "dig" then
@@ -239,9 +247,15 @@ local function drawScreen()
         line = line + 1
     end
 
-    -- Uptime
-    writeLine(line, " Uptime: " .. formatTime(os.clock() - startTime), colors.lightGray)
-    line = line + 1
+    -- Uptimes
+    if d.uptime then
+        writeLine(line, " Session: " .. formatTime(d.uptime), colors.lightGray)
+        line = line + 1
+    end
+    if d.total_uptime then
+        writeLine(line, " Total:   " .. formatTime(d.total_uptime), colors.lightGray)
+        line = line + 1
+    end
 
     -- Events
     if d.event then
