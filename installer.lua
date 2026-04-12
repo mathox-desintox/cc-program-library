@@ -27,6 +27,13 @@ local PROGRAMS = {
         device   = "turtle",
     },
     {
+        name     = "Floor Auto-Resume",
+        desc     = "Resume floor builder after reboot/crash",
+        file     = "floor-builder/floor_startup.lua",
+        target   = "startup/floor_resume.lua",
+        device   = "turtle",
+    },
+    {
         name     = "Floor Monitor",
         desc     = "Floor builder status on advanced monitor",
         file     = "floor-builder/floor_monitor.lua",

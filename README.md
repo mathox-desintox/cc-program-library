@@ -26,9 +26,10 @@ Automated underground floor excavation system. A turtle digs out and finishes la
 
 **Runs on:** Advanced Turtle (pickaxe)
 
-Includes companion display programs (auto-run on boot when installed via the installer):
+Includes companion programs (auto-run on boot when installed via the installer):
 - `floor_monitor.lua` — status display for advanced monitors
 - `floor_pocket.lua` — status display for pocket computers (multi-page, tap to navigate)
+- `floor_startup.lua` — auto-resume for the builder turtle after reboot/crash (5s cancel window)
 
 > **Important:** Use **ender modems** (not regular wireless modems) on both the turtle and monitor/pocket computers. Regular modems have a ~64 block range and will lose connection when you walk away, even in force-loaded chunks.
 
