@@ -343,6 +343,11 @@ end
 local ascendToHome
 local moveToY, moveToX, moveToZ, moveTo
 
+-- When set (to a DIG_PASSES entry), fwd() will also dig up/down after each
+-- successful move. This ensures cave traversal doesn't leave un-dug blocks
+-- in the pass's up/down layers when fwd() moves through air.
+local digMode = nil
+
 local function turnRight()
     turtle.turnRight()
     facing = (facing + 1) % 4
@@ -386,6 +391,9 @@ local function ensureFuel(min)
         print("  FUEL CRITICAL (" .. turtle.getFuelLevel() .. "/" .. min .. ")")
         print("  Returning home for coal...")
         local rx, ry, rz, rf = x, y, z, facing
+        -- Disable auto-column-clear during the fuel trip
+        local savedDigMode = digMode
+        digMode = nil
         ascendToHome()
         moveToY(HOME_Y + 1) -- coal chest level
         face(1)             -- south
@@ -411,6 +419,7 @@ local function ensureFuel(min)
         turtle.select(1)
         moveTo(rx, ry, rz)
         face(rf)
+        digMode = savedDigMode
     end
 end
 
@@ -422,6 +431,20 @@ local function fwd()
             z = z + DZ[facing]
             pcall(saveState)  -- persist actual position on every move
             tickBroadcast()
+            -- In dig mode, also clear up/down at the new position so cave
+            -- traversals don't leave un-dug blocks in the pass's layers
+            if digMode then
+                if digMode.dig_up then
+                    while turtle.detectUp() do
+                        turtle.digUp(); sleep(0.05)
+                    end
+                end
+                if digMode.dig_down then
+                    while turtle.detectDown() do
+                        turtle.digDown(); sleep(0.05)
+                    end
+                end
+            end
             return true
         end
         if turtle.detect() then
@@ -536,6 +559,9 @@ local function handleLiquid(direction)
         print("  LIQUID detected but no smooth stone!")
         print("  Returning home to restock...")
         local rx, ry, rz, rf = x, y, z, facing
+        -- Disable auto-column-clear during the restock trip
+        local savedDigMode = digMode
+        digMode = nil
         ascendToHome()
         face(0) -- east toward stone chest
         while not turtle.suck(64) do
@@ -544,6 +570,7 @@ local function handleLiquid(direction)
         end
         moveTo(rx, ry, rz)
         face(rf)
+        digMode = savedDigMode
     end
 
     local s = findStone()
@@ -830,10 +857,14 @@ local function phaseDig()
         local pass = DIG_PASSES[pi]
         print("  Pass " .. pi .. "/" .. #DIG_PASSES .. " at Y=" .. pass.nav_y)
 
-        -- Navigate to shaft, descend to working Y
+        -- Navigate to shaft (no auto-column-clear — shaft is kept clear)
+        digMode = nil
         moveToX(SHAFT_X)
         moveToZ(SHAFT_Z)
         moveToY(pass.nav_y)
+
+        -- Enter dig mode so every fwd() auto-clears up/down
+        digMode = pass
 
         local z_start = (pi == start_pass) and start_row or AREA_Z_MIN
 
@@ -879,12 +910,14 @@ local function phaseDig()
 
                 -- Dump if inventory is getting full
                 if needsDump() then
+                    -- Disable auto-column-clear during navigation trips
+                    digMode = nil
                     local rx2, ry2, rz2, rf2 = goHomeAndDump()
                     checkAndRefuel()
                     moveTo(rx2, ry2, rz2)
                     face(rf2)
-                    -- Re-clear column after dump trip — return path may have passed
-                    -- through undug caves leaving stale blocks above/below
+                    -- Re-enable dig mode and clear column at return position
+                    digMode = pass
                     digColumn()
                 end
             end
@@ -900,6 +933,7 @@ local function phaseDig()
         state.row_z = AREA_Z_MIN
     end
 
+    digMode = nil
     state.phase = "ceiling"
     state.dig_pass = 1
     state.row_z = AREA_Z_MIN
