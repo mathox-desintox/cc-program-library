@@ -59,7 +59,7 @@ local LIGHT_NAME             = "simplylight:illuminant_black_block_on"
 local FUEL_ITEM              = "minecraft:coal"
 
 -- Inventory thresholds
-local DUMP_THRESHOLD         = 12  -- dump when this many slots occupied
+local DUMP_THRESHOLD         = 13  -- dump when this many slots occupied (3 free remaining)
 local MIN_FUEL               = 500 -- refuel when below this
 local STONE_RESERVE          = 16  -- keep stone in this slot for liquid handling
 
@@ -742,6 +742,14 @@ local function phaseDig()
                 -- Also check forward for liquids before next move
                 handleLiquid("forward")
                 stats.blocks_broken = stats.blocks_broken + 1
+
+                -- Dump if inventory is getting full
+                if needsDump() then
+                    local rx2, ry2, rz2, rf2 = goHomeAndDump()
+                    checkAndRefuel()
+                    moveTo(rx2, ry2, rz2)
+                    face(rf2)
+                end
             end
 
             -- Row done
@@ -749,14 +757,6 @@ local function phaseDig()
             state.row_z = rz + 1
             saveState()
             broadcast()
-
-            -- Dump if needed
-            if needsDump() then
-                local rx2, ry2, rz2, rf2 = goHomeAndDump()
-                checkAndRefuel()
-                moveTo(rx2, ry2, rz2)
-                face(rf2)
-            end
         end
 
         -- Pass complete
