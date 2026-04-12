@@ -170,8 +170,44 @@ local function initRednet()
     print("  Rednet open on " .. modemSide)
 end
 
+-- Stats tracking for progress display
+local stats = {
+    blocks_broken  = 0,
+    blocks_total   = 0,
+    blocks_placed  = 0,
+    place_total    = 0,
+    lights_placed  = 0,
+    lights_total   = 0,
+    phase_start    = 0,  -- os.clock() when phase began
+}
+
+local lastBroadcast = 0
+local BROADCAST_INTERVAL = 2 -- seconds between auto-broadcasts
+
+local function computeETA()
+    local elapsed = os.clock() - stats.phase_start
+    local done, total = 0, 0
+    if stats.blocks_total > 0 then
+        done = stats.blocks_broken
+        total = stats.blocks_total
+    elseif stats.place_total > 0 then
+        done = stats.blocks_placed
+        total = stats.place_total
+    elseif stats.lights_total > 0 then
+        done = stats.lights_placed
+        total = stats.lights_total
+    end
+    if done > 0 and total > 0 then
+        local rate = done / elapsed  -- items per second
+        local remaining = total - done
+        return math.floor(remaining / rate)
+    end
+    return nil
+end
+
 local function broadcast(extra)
     if not modemSide then return end
+    stats.eta = computeETA()
     local msg = {
         turtle    = "floor_builder",
         floor     = FLOOR_NUM,
@@ -182,11 +218,19 @@ local function broadcast(extra)
         light_idx = state.light_idx,
         fuel      = turtle.getFuelLevel(),
         pos       = { x = x, y = y, z = z },
+        stats     = stats,
     }
     if extra then
         for k, v in pairs(extra) do msg[k] = v end
     end
     pcall(function() rednet.broadcast(msg, REDNET_PROTOCOL) end)
+    lastBroadcast = os.clock()
+end
+
+local function tickBroadcast()
+    if os.clock() - lastBroadcast >= BROADCAST_INTERVAL then
+        broadcast()
+    end
 end
 
 ---------------------------------------------
@@ -272,6 +316,7 @@ local function fwd()
         if turtle.forward() then
             x = x + DX[facing]
             z = z + DZ[facing]
+            tickBroadcast()
             return true
         end
         if turtle.detect() then
@@ -288,6 +333,7 @@ local function goUp()
     for attempt = 1, 60 do
         if turtle.up() then
             y = y + 1
+            tickBroadcast()
             return true
         end
         if turtle.detectUp() then
@@ -303,6 +349,7 @@ local function goDown()
     for attempt = 1, 60 do
         if turtle.down() then
             y = y - 1
+            tickBroadcast()
             return true
         end
         if turtle.detectDown() then
@@ -639,6 +686,17 @@ local function phaseDig()
 
     local start_pass = state.dig_pass or 1
     local start_row = state.row_z or AREA_Z_MIN
+    local area_w = AREA_X_MAX - AREA_X_MIN + 1
+    local area_d = AREA_Z_MAX - AREA_Z_MIN + 1
+    local blocks_per_pass = area_w * area_d  -- positions per pass (each digs up to 2 blocks)
+
+    -- Estimate total blocks (positions * layers_per_pass * num_passes)
+    stats.blocks_total = blocks_per_pass * #DIG_PASSES
+    -- Estimate already done from resume
+    local done_passes = start_pass - 1
+    local done_rows = start_row - AREA_Z_MIN
+    stats.blocks_broken = done_passes * blocks_per_pass + done_rows * area_w
+    stats.phase_start = os.clock()
 
     for pi = start_pass, #DIG_PASSES do
         local pass = DIG_PASSES[pi]
@@ -678,6 +736,7 @@ local function phaseDig()
                 end
                 -- Also check forward for liquids before next move
                 handleLiquid("forward")
+                stats.blocks_broken = stats.blocks_broken + 1
             end
 
             -- Row done
@@ -716,6 +775,11 @@ local function phaseCeiling()
     local nav_y = CEILING_Y + 1
     local start_z = state.row_z or AREA_Z_MIN
     local placed = 0
+    local area_w = AREA_X_MAX - AREA_X_MIN + 1
+
+    stats.place_total = (AREA_X_MAX - AREA_X_MIN + 1) * (AREA_Z_MAX - AREA_Z_MIN + 1) - 1  -- minus shaft
+    stats.blocks_placed = (start_z - AREA_Z_MIN) * area_w  -- estimate from resume
+    stats.phase_start = os.clock()
 
     -- Initial stone restock
     goHomeAndGetStone()
@@ -732,6 +796,7 @@ local function phaseCeiling()
             turtle.placeDown()
             placed = placed + 1
         end
+        stats.blocks_placed = stats.blocks_placed + 1
     end)
 
     state.phase = "floor_place"
@@ -750,6 +815,11 @@ local function phaseFloor()
     local nav_y = FLOOR_Y + 1
     local start_z = state.row_z or AREA_Z_MIN
     local placed = 0
+    local area_w = AREA_X_MAX - AREA_X_MIN + 1
+
+    stats.place_total = (AREA_X_MAX - AREA_X_MIN + 1) * (AREA_Z_MAX - AREA_Z_MIN + 1) - 1
+    stats.blocks_placed = (start_z - AREA_Z_MIN) * area_w
+    stats.phase_start = os.clock()
 
     goHomeAndGetStone()
     moveToX(SHAFT_X)
@@ -764,6 +834,7 @@ local function phaseFloor()
             turtle.placeDown()
             placed = placed + 1
         end
+        stats.blocks_placed = stats.blocks_placed + 1
     end)
 
     state.phase = "walls"
@@ -780,6 +851,15 @@ end
 local function phaseWalls()
     print("=== Phase: WALLS Y=" .. (FLOOR_Y + 1) .. " to " .. (CEILING_Y - 1) .. " ===")
     local start_wy = state.wall_y or (FLOOR_Y + 1)
+    local area_w = AREA_X_MAX - AREA_X_MIN + 1
+    local area_d = AREA_Z_MAX - AREA_Z_MIN + 1
+    local perimeter = (area_w + area_d) * 2
+    local total_layers = CEILING_Y - 1 - FLOOR_Y
+    local done_layers = start_wy - (FLOOR_Y + 1)
+
+    stats.place_total = perimeter * total_layers
+    stats.blocks_placed = perimeter * done_layers
+    stats.phase_start = os.clock()
 
     for wy = start_wy, CEILING_Y - 1 do
         print("  Wall layer Y=" .. wy)
@@ -797,6 +877,7 @@ local function phaseWalls()
                 requireItem(SMOOTH_STONE, goHomeAndGetStone, "Stone")
                 turtle.place()
             end
+            stats.blocks_placed = stats.blocks_placed + 1
         end
 
         -- East wall (X=AREA_X_MAX=-3297): turtle at X=INT_X_MAX=-3298, face east
@@ -808,6 +889,7 @@ local function phaseWalls()
                 requireItem(SMOOTH_STONE, goHomeAndGetStone, "Stone")
                 turtle.place()
             end
+            stats.blocks_placed = stats.blocks_placed + 1
         end
 
         -- South wall (Z=AREA_Z_MAX=2675): turtle at Z=INT_Z_MAX=2674, face south
@@ -819,6 +901,7 @@ local function phaseWalls()
                 requireItem(SMOOTH_STONE, goHomeAndGetStone, "Stone")
                 turtle.place()
             end
+            stats.blocks_placed = stats.blocks_placed + 1
         end
 
         -- West wall (X=AREA_X_MIN=-3399): turtle at X=INT_X_MIN=-3398, face west
@@ -830,6 +913,7 @@ local function phaseWalls()
                 requireItem(SMOOTH_STONE, goHomeAndGetStone, "Stone")
                 turtle.place()
             end
+            stats.blocks_placed = stats.blocks_placed + 1
         end
 
         state.wall_y = wy + 1
@@ -855,6 +939,10 @@ local function phaseFloorLights()
     local nav_y = FLOOR_Y + 1
     local start_idx = state.light_idx or 1
 
+    stats.lights_total = #targets
+    stats.lights_placed = start_idx - 1
+    stats.phase_start = os.clock()
+
     goHomeAndGetLights()
     moveToX(SHAFT_X)
     moveToZ(SHAFT_Z)
@@ -874,6 +962,7 @@ local function phaseFloorLights()
             end
         end
 
+        stats.lights_placed = i
         state.light_idx = i + 1
         if i % 20 == 0 then
             saveState(); broadcast()
@@ -897,6 +986,10 @@ local function phaseCeilingLights()
     local nav_y = CEILING_Y - 1
     local start_idx = state.light_idx or 1
 
+    stats.lights_total = #targets
+    stats.lights_placed = start_idx - 1
+    stats.phase_start = os.clock()
+
     goHomeAndGetLights()
     moveToX(SHAFT_X)
     moveToZ(SHAFT_Z)
@@ -915,6 +1008,7 @@ local function phaseCeilingLights()
             end
         end
 
+        stats.lights_placed = i
         state.light_idx = i + 1
         if i % 20 == 0 then
             saveState(); broadcast()
@@ -937,6 +1031,10 @@ local function phaseWallLights()
     local targets = buildWallLightTargets()
     local start_idx = state.light_idx or 1
 
+    stats.lights_total = #targets
+    stats.lights_placed = start_idx - 1
+    stats.phase_start = os.clock()
+
     goHomeAndGetLights()
     moveToX(SHAFT_X)
     moveToZ(SHAFT_Z)
@@ -956,6 +1054,7 @@ local function phaseWallLights()
             end
         end
 
+        stats.lights_placed = i
         state.light_idx = i + 1
         if i % 10 == 0 then
             saveState(); broadcast()
@@ -1053,6 +1152,33 @@ local function main()
     if resumed then
         print("Resuming from: phase=" .. state.phase ..
             " pos=" .. state.x .. "," .. state.y .. "," .. state.z)
+    end
+
+    -- Bootstrap fuel: if turtle can't reach the fuel chest, ask for manual fuel
+    if turtle.getFuelLevel() ~= "unlimited" and turtle.getFuelLevel() < MIN_FUEL then
+        -- Try inventory fuel first
+        for s = 1, 16 do
+            local d = turtle.getItemDetail(s)
+            if d and d.name == FUEL_ITEM then
+                turtle.select(s); turtle.refuel(64)
+            end
+        end
+        turtle.select(1)
+        while turtle.getFuelLevel() < MIN_FUEL do
+            print("Not enough fuel to reach the fuel chest!")
+            print("  Current: " .. turtle.getFuelLevel() .. " / " .. MIN_FUEL)
+            print("  Place fuel in the turtle inventory")
+            print("  and press any key...")
+            os.pullEvent("key")
+            for s = 1, 16 do
+                local d = turtle.getItemDetail(s)
+                if d and d.name == FUEL_ITEM then
+                    turtle.select(s); turtle.refuel(64)
+                end
+            end
+            turtle.select(1)
+        end
+        print("  Fuel OK: " .. turtle.getFuelLevel())
     end
 
     initRednet()

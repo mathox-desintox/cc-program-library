@@ -68,12 +68,21 @@ Nav layer for tier t: py=-(9*t + 2)
 All programs wait-and-retry on missing supplies rather than crashing:
 - Missing items → go home, print what's needed, wait for keypress
 - Low fuel → go home, pull from coal chest, wait if empty
+- **Fuel bootstrap** → if turtle starts with insufficient fuel to reach chest, prompts user to manually insert fuel
 - Liquid encountered without stone → go home, restock, return to position
 - No modem → fatal error (monitoring is required for floor.lua)
 
-### Rednet protocol
+### Rednet protocol & broadcasting
 - `mathox_base_floor_builder_v1` — unique to avoid conflicts on multiplayer server
 - All advanced computers/monitors/pocket computers (full 16-color support)
+- Broadcasts include `stats` table with block counts and ETA:
+  - `blocks_broken`/`blocks_total` (dig phase)
+  - `blocks_placed`/`place_total` (ceiling, floor, walls phases)
+  - `lights_placed`/`lights_total` (light phases)
+  - `eta` — seconds remaining, computed from average rate
+  - `phase_start` — `os.clock()` when current phase began
+- Time-throttled broadcasting via `tickBroadcast()` in movement functions (every 2s)
+- Forced broadcast on row/layer completion and phase transitions
 
 ## How to deploy in-game
 1. Push repo to GitHub

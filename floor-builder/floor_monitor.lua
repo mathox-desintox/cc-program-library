@@ -169,39 +169,52 @@ local function drawScreen()
 
     -- Phase-specific progress
     local line = 8
+    local s = d.stats or {}
 
     if d.phase == "dig" then
         local passNum = d.dig_pass or 1
-        writeLine(line, "Dig Pass: " .. passNum .. " / 5", colors.white)
+        local total = s.blocks_total or 1
+        local done = s.blocks_broken or 0
+        writeLine(line, " Blocks: " .. done .. " / " .. total ..
+            "  (" .. math.floor(done / total * 100) .. "%)", colors.white)
         line = line + 1
-        drawBar(line, "Pass " .. passNum, passNum, 5, colors.orange)
+        drawBar(line, "Progress", done, total, colors.orange)
         line = line + 1
-        if d.row_z then
-            local done = d.row_z - 2573
-            drawBar(line, "Row", done, 103, colors.green)
-            line = line + 1
-        end
+        writeLine(line, " Pass " .. passNum, colors.lightGray)
+        line = line + 1
     elseif d.phase == "ceiling" or d.phase == "floor_place" then
-        if d.row_z then
-            local done = d.row_z - 2573
-            drawBar(line, "Row", done, 103, colors.blue)
-            line = line + 1
-        end
+        local total = s.place_total or 1
+        local done = s.blocks_placed or 0
+        local label = d.phase == "ceiling" and "Ceiling" or "Floor"
+        writeLine(line, " " .. label .. ": " .. done .. " / " .. total ..
+            "  (" .. math.floor(done / total * 100) .. "%)", colors.white)
+        line = line + 1
+        drawBar(line, "Placed", done, total, colors.blue)
+        line = line + 1
     elseif d.phase == "walls" then
-        if d.wall_y then
-            local done = d.wall_y - 9
-            drawBar(line, "Layer", done, 8, colors.cyan)
-            line = line + 1
-        end
+        local total = s.place_total or 1
+        local done = s.blocks_placed or 0
+        writeLine(line, " Walls: " .. done .. " / " .. total ..
+            "  (" .. math.floor(done / total * 100) .. "%)", colors.white)
+        line = line + 1
+        drawBar(line, "Placed", done, total, colors.cyan)
+        line = line + 1
     elseif d.phase and d.phase:find("lights") then
-        local maxLights = 312
-        if d.phase == "wall_lights" then maxLights = 52 end
-        if d.light_idx then
-            drawBar(line, "Light", d.light_idx, maxLights, colors.yellow)
-            line = line + 1
-        end
+        local total = s.lights_total or 1
+        local done = s.lights_placed or 0
+        writeLine(line, " Lights: " .. done .. " / " .. total ..
+            "  (" .. math.floor(done / total * 100) .. "%)", colors.white)
+        line = line + 1
+        drawBar(line, "Placed", done, total, colors.yellow)
+        line = line + 1
     elseif d.phase == "done" then
         writeCenter(line, "ALL COMPLETE!", colors.lime)
+        line = line + 1
+    end
+
+    -- ETA
+    if s.eta and s.eta > 0 then
+        writeLine(line, " ETA: " .. formatTime(s.eta), colors.orange)
         line = line + 1
     end
 

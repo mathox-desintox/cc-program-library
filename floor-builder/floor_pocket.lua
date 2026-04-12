@@ -117,53 +117,48 @@ local function drawScreen()
 
     -- Progress
     local line = stale and 7 or 6
+    local s = d.stats or {}
 
     if d.phase == "dig" then
+        local total = s.blocks_total or 1
+        local done = s.blocks_broken or 0
         term.setCursorPos(1, line)
         term.setTextColor(colors.lightGray)
-        term.write("Pass ")
-        term.setTextColor(colors.orange)
-        print((d.dig_pass or "?") .. "/5")
+        print(done .. "/" .. total .. " blocks")
         line = line + 1
-        if d.row_z then
-            local done = d.row_z - 2573
-            term.setCursorPos(1, line)
-            drawBar(done, 103, colors.orange)
-            line = line + 1
-        end
+        term.setCursorPos(1, line)
+        drawBar(done, total, colors.orange)
+        line = line + 1
     elseif d.phase == "ceiling" or d.phase == "floor_place" then
-        if d.row_z then
-            local done = d.row_z - 2573
-            term.setCursorPos(1, line)
-            term.setTextColor(colors.lightGray)
-            print("Row " .. done .. "/103")
-            line = line + 1
-            term.setCursorPos(1, line)
-            drawBar(done, 103, colors.blue)
-            line = line + 1
-        end
+        local total = s.place_total or 1
+        local done = s.blocks_placed or 0
+        term.setCursorPos(1, line)
+        term.setTextColor(colors.lightGray)
+        print(done .. "/" .. total .. " placed")
+        line = line + 1
+        term.setCursorPos(1, line)
+        drawBar(done, total, colors.blue)
+        line = line + 1
     elseif d.phase == "walls" then
-        if d.wall_y then
-            local done = d.wall_y - 9
-            term.setCursorPos(1, line)
-            term.setTextColor(colors.lightGray)
-            print("Layer " .. done .. "/8")
-            line = line + 1
-            term.setCursorPos(1, line)
-            drawBar(done, 8, colors.cyan)
-            line = line + 1
-        end
+        local total = s.place_total or 1
+        local done = s.blocks_placed or 0
+        term.setCursorPos(1, line)
+        term.setTextColor(colors.lightGray)
+        print(done .. "/" .. total .. " placed")
+        line = line + 1
+        term.setCursorPos(1, line)
+        drawBar(done, total, colors.cyan)
+        line = line + 1
     elseif d.phase and d.phase:find("lights") then
-        local maxL = d.phase == "wall_lights" and 52 or 312
-        if d.light_idx then
-            term.setCursorPos(1, line)
-            term.setTextColor(colors.lightGray)
-            print("Light " .. d.light_idx .. "/" .. maxL)
-            line = line + 1
-            term.setCursorPos(1, line)
-            drawBar(d.light_idx, maxL, colors.yellow)
-            line = line + 1
-        end
+        local total = s.lights_total or 1
+        local done = s.lights_placed or 0
+        term.setCursorPos(1, line)
+        term.setTextColor(colors.lightGray)
+        print(done .. "/" .. total .. " lights")
+        line = line + 1
+        term.setCursorPos(1, line)
+        drawBar(done, total, colors.yellow)
+        line = line + 1
     elseif d.phase == "done" then
         term.setCursorPos(1, line)
         term.setBackgroundColor(colors.green)
@@ -171,6 +166,14 @@ local function drawScreen()
         local msg = " ALL COMPLETE! "
         term.write(string.rep(" ", math.floor((w - #msg) / 2)) .. msg)
         term.setBackgroundColor(colors.black)
+        line = line + 1
+    end
+
+    -- ETA
+    if s.eta and s.eta > 0 and line <= h then
+        term.setCursorPos(1, line)
+        term.setTextColor(colors.orange)
+        print("ETA: " .. formatTime(s.eta))
         line = line + 1
     end
 
