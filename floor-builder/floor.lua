@@ -751,21 +751,30 @@ local function buildCeilingLightTargets()
     return list
 end
 
--- Wall lights form an X-pattern (5 lights in a 3×3 box) at each center.
+-- Wall lights form a squished-diamond pattern (5 lights, wider than tall):
+--     . . . . L . . . .        <- top tip     (0, +3)
+--     . . . . . . . . .
+--     . . . . . . . . .
+--     L . . . L . . . L        <- middle row  (-4, 0) (0, 0) (+4, 0)
+--     . . . . . . . . .
+--     . . . . . . . . .
+--     . . . . L . . . .        <- bottom tip  (0, -3)
 -- Offsets are (along-wall horizontal, vertical Y), ordered bottom→top for
 -- smooth turtle motion between patterns.
-local WALL_LIGHT_MARGIN    = 2 -- no lights in first N blocks of any wall edge
-local WALL_LIGHT_STEP      = 8 -- spacing between pattern centers
-local WALL_PATTERN_OFFSETS = {
-    { -1, -1 }, { 1, -1 },
-    { 0,  0 },
-    { -1, 1 }, { 1, 1 },
+local WALL_LIGHT_MARGIN     = 2 -- no lights in first N blocks of any wall edge
+local WALL_LIGHT_STEP       = 8 -- adjacent patterns share their ±4 tips
+local WALL_PATTERN_H_RADIUS = 4 -- horizontal half-width of the pattern
+local WALL_PATTERN_OFFSETS  = {
+    { 0,  -3 },
+    { -4, 0 }, { 0, 0 }, { 4, 0 },
+    { 0,  3 },
 }
 
 local function wallPatternCenters(lo, hi)
-    -- Centers must be ≥ MARGIN+1 inside so tips at ±1 stay ≥ MARGIN from edge
-    local first_ok = lo + WALL_LIGHT_MARGIN + 1
-    local last_ok = hi - WALL_LIGHT_MARGIN - 1
+    -- Centers placed so the pattern's horizontal tips stay ≥ MARGIN from the
+    -- wall edge: inset by MARGIN + H_RADIUS.
+    local first_ok = lo + WALL_LIGHT_MARGIN + WALL_PATTERN_H_RADIUS
+    local last_ok = hi - WALL_LIGHT_MARGIN - WALL_PATTERN_H_RADIUS
     if first_ok > last_ok then return {} end
     local span = last_ok - first_ok
     local n = math.floor(span / WALL_LIGHT_STEP) + 1
