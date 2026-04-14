@@ -8,17 +8,24 @@
 -- and installs staggered diagonal lattice lighting.
 --
 -- Setup:
---   1. Place turtle at NW interior corner of the floor ABOVE, facing East
---      Position: (-3398, 22, 2574), facing East (+X)
+--   1. Place turtle at the NW interior corner (-3398, ?, 2574) facing East.
+--      The Y coordinate is determined at runtime via GPS — the turtle must
+--      sit ON TOP of the floor directly above the one to be built. All Y
+--      levels (ceiling, floor, dig range, wall-light row) are derived from
+--      that HOME_Y, so floors can have different heights and buffer depths.
 --   2. Chests (from turtle's perspective):
 --      FRONT (east):  smooth stone chest at same Y, lights chest above it
 --      RIGHT (south): dump chest at same Y, coal chest above it
 --   3. Equip a pickaxe in the turtle's tool slot
---   4. Run: floor              (full build, all phases)
---      Run: floor dig          (just excavation)
---      Run: floor shell        (ceiling + floor + walls)
---      Run: floor lights       (just lighting)
---      Run: floor status       (print progress and exit)
+--   4. Run one of:
+--      floor                 full build, all phases
+--      floor dig             just excavation
+--      floor shell           ceiling + floor + walls
+--      floor lights          all three lighting phases
+--      floor floor_lights    just the floor lights
+--      floor ceiling_lights  just the ceiling lights
+--      floor wall_lights     just the wall lights
+--      floor status          print progress and exit
 --
 -- The turtle digs down through the existing floor. The shaft column
 -- at (-3398, 2574) is kept open for the turtle to return to chests.
@@ -1141,22 +1148,14 @@ local function phaseFloorLights()
         local t = targets[i]
         moveTo(t.x, nav_y, t.z)
 
-        print("[FL #" .. i .. "] pos=" .. x .. "," .. y .. "," .. z ..
-            " face=" .. facing .. " target=" .. t.x .. "," .. t.z)
         -- Dig the smooth stone floor block, replace with light
         if turtle.detectDown() then
             local ok, data = turtle.inspectDown()
             if ok and data.name == SMOOTH_STONE then
-                print("  digDown @ " .. x .. "," .. (y - 1) .. "," .. z)
                 turtle.digDown()
                 requireItem(LIGHT_NAME, goHomeAndGetLights, "Lights")
-                print("  placeDown light @ " .. x .. "," .. (y - 1) .. "," .. z)
                 turtle.placeDown()
-            else
-                print("  skip: below is " .. (ok and data.name or "not inspectable"))
             end
-        else
-            print("  skip: nothing below")
         end
 
         stats.lights_placed = i
@@ -1422,9 +1421,18 @@ local function main()
         runFromPhase("ceiling", "walls")
     elseif mode == "lights" then
         runFromPhase("floor_lights", "wall_lights")
+    elseif mode == "floor_lights" or mode == "floorlights" then
+        state.phase = "floor_lights"
+        runFromPhase("floor_lights", "floor_lights")
+    elseif mode == "ceiling_lights" or mode == "ceilinglights" then
+        state.phase = "ceiling_lights"
+        runFromPhase("ceiling_lights", "ceiling_lights")
+    elseif mode == "wall_lights" or mode == "walllights" then
+        state.phase = "wall_lights"
+        runFromPhase("wall_lights", "wall_lights")
     else
         print("Unknown mode: " .. mode)
-        print("Usage: floor [build|dig|shell|lights|status]")
+        print("Usage: floor [build|dig|shell|lights|floor_lights|ceiling_lights|wall_lights|status]")
         return
     end
 

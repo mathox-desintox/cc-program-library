@@ -9,7 +9,7 @@ ComputerCraft (CC:Tweaked) turtle programs for Minecraft ATM10 modpack. Two main
 | File | Purpose |
 |---|---|
 | `farm.lua` | Builds 9x9 Mystical Agriculture farm plots with AE2 growth accelerators, pylons, ME cables. Supports underground MA growth accelerator tiers. |
-| `floor.lua` | Excavates underground floors (101x101), builds smooth stone shell, installs staggered diagonal lattice lighting. |
+| `floor.lua` | Excavates underground floors (101x101), builds smooth stone shell, installs staggered diagonal lattice floor/ceiling lighting and diamond-pattern wall lighting. |
 | `floor_monitor.lua` | Advanced monitor display for floor builder status via rednet. |
 | `floor_pocket.lua` | Advanced pocket computer display for floor builder status via rednet. |
 | `installer.lua` | Pastebin-hosted installer (`hkJJFbTv`) that pulls files from GitHub. Monitor/pocket programs install to `startup/` for auto-run on boot. |
@@ -56,8 +56,14 @@ Nav layer for tier t: py=-(9*t + 2)
 
 ### floor.lua structure
 - Floor 1 reference: floor Y=21, ceiling Y=30, interior 101x101
-- Configurable: `FLOOR_NUM`, `INTERIOR_HEIGHT`, `BUFFER_LAYERS`
+- Configurable: `INTERIOR_HEIGHT`, `BUFFER_LAYERS` — can differ per floor
+- `HOME_Y` is GPS'd at runtime from the turtle's starting position (on top
+  of the floor above the one being built), persisted in state for resume.
+  All derived Y levels (`CEILING_Y`, `FLOOR_Y`, `DIG_TOP_Y`, `DIG_BOT_Y`,
+  `WALL_LIGHT_Y`) are computed in `initLevels()` from `HOME_Y`.
 - Phases: dig → ceiling → floor → walls → floor_lights → ceiling_lights → wall_lights
+- Subcommands run slices: `dig`, `shell`, `lights`, or a single light phase
+  via `floor_lights` / `ceiling_lights` / `wall_lights`
 - Progress saved to `floor_progress` file for crash recovery
 - Broadcasts status via rednet protocol `mathox_base_floor_builder_v1`
 - Chests: stone (front), lights (front+1Y), dump (right), coal (right+1Y)

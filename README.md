@@ -20,7 +20,10 @@ Automated Mystical Agriculture farm builder. A turtle constructs 9x9 farm plots 
 
 Automated underground floor excavation system. A turtle digs out and finishes large rooms (101x101) with:
 - Full excavation with smooth stone shell (floor, ceiling, walls)
-- Staggered diagonal lattice lighting pattern
+- Staggered diagonal lattice lighting for floor & ceiling
+- Diamond-pattern wall lighting (scales with interior height)
+- Per-floor `INTERIOR_HEIGHT` / `BUFFER_LAYERS` — `HOME_Y` is GPS'd at runtime, so each floor can have a different crawl-space and height
+- Subcommands to run individual phases: `dig`, `shell`, `lights`, `floor_lights`, `ceiling_lights`, `wall_lights`, or `status`
 - Crash recovery via progress file
 - Real-time status broadcasting over rednet
 
