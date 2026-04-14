@@ -782,24 +782,29 @@ local function buildWallLightTargets()
     local y_max = CEILING_Y - 1 - WALL_LIGHT_MARGIN
 
     local function addPattern(centers, axis, fixed_val, dir)
+        -- Along-wall margin limits (only the horizontal-along-wall axis is
+        -- constrained by the corner-margin rule; the wall-fixed axis is
+        -- always at INT_*_MIN/MAX which would fail that check).
+        local h_min, h_max
+        if axis == "x" then
+            h_min = INT_X_MIN + WALL_LIGHT_MARGIN
+            h_max = INT_X_MAX - WALL_LIGHT_MARGIN
+        else
+            h_min = INT_Z_MIN + WALL_LIGHT_MARGIN
+            h_max = INT_Z_MAX - WALL_LIGHT_MARGIN
+        end
         for _, c in ipairs(centers) do
             for _, o in ipairs(WALL_PATTERN_OFFSETS) do
                 local h = c + o[1]
                 local ly = WALL_LIGHT_Y + o[2]
-                if ly >= y_min and ly <= y_max then
+                if ly >= y_min and ly <= y_max and h >= h_min and h <= h_max then
                     local lx, lz
                     if axis == "x" then
                         lx, lz = h, fixed_val
                     else
                         lx, lz = fixed_val, h
                     end
-                    -- Per-tip margin check (defense in depth)
-                    if lx >= INT_X_MIN + WALL_LIGHT_MARGIN
-                        and lx <= INT_X_MAX - WALL_LIGHT_MARGIN
-                        and lz >= INT_Z_MIN + WALL_LIGHT_MARGIN
-                        and lz <= INT_Z_MAX - WALL_LIGHT_MARGIN then
-                        list[#list + 1] = { x = lx, y = ly, z = lz, dir = dir }
-                    end
+                    list[#list + 1] = { x = lx, y = ly, z = lz, dir = dir }
                 end
             end
         end
