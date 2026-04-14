@@ -1141,14 +1141,22 @@ local function phaseFloorLights()
         local t = targets[i]
         moveTo(t.x, nav_y, t.z)
 
+        print("[FL #" .. i .. "] pos=" .. x .. "," .. y .. "," .. z ..
+            " face=" .. facing .. " target=" .. t.x .. "," .. t.z)
         -- Dig the smooth stone floor block, replace with light
         if turtle.detectDown() then
             local ok, data = turtle.inspectDown()
             if ok and data.name == SMOOTH_STONE then
+                print("  digDown @ " .. x .. "," .. (y - 1) .. "," .. z)
                 turtle.digDown()
                 requireItem(LIGHT_NAME, goHomeAndGetLights, "Lights")
+                print("  placeDown light @ " .. x .. "," .. (y - 1) .. "," .. z)
                 turtle.placeDown()
+            else
+                print("  skip: below is " .. (ok and data.name or "not inspectable"))
             end
+        else
+            print("  skip: nothing below")
         end
 
         stats.lights_placed = i
