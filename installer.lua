@@ -143,34 +143,68 @@ local function menu(items)
     end
 end
 
-local choice = menu(PROGRAMS)
-local prog = PROGRAMS[choice]
+-- Build menu: "Update all installed" pseudo-entry first, then programs
+local MENU = { { name = "Update all installed", desc = "Re-download every program already on disk", device = "any" } }
+for _, p in ipairs(PROGRAMS) do MENU[#MENU + 1] = p end
+
+local choice = menu(MENU)
 
 term.clear()
 term.setCursorPos(1, 1)
 setColor(colors.white)
-print("Installing: " .. prog.name)
-print()
 
-local url = REPO .. "/" .. prog.file
-local ok = download(url, prog.target)
-
-if ok then
+if choice == 1 then
+    -- Update: re-download every program whose target file already exists
+    print("Updating installed programs...")
+    print()
+    local updated, failed, skipped = 0, 0, 0
+    for _, p in ipairs(PROGRAMS) do
+        if fs.exists(p.target) then
+            setColor(colors.white)
+            print(p.name)
+            if download(REPO .. "/" .. p.file, p.target) then
+                updated = updated + 1
+            else
+                failed = failed + 1
+            end
+        else
+            skipped = skipped + 1
+        end
+    end
     print()
     setColor(colors.lime)
-    if prog.target:find("^startup/") then
-        print("Installed! Will auto-run on")
-        print("  next reboot.")
-    else
-        print("Installed! Run with:")
-        setColor(colors.white)
-        print("  " .. prog.target:gsub("%.lua$", ""))
+    print("Updated: " .. updated)
+    if failed > 0 then
+        setColor(colors.red)
+        print("Failed:  " .. failed)
     end
+    setColor(colors.lightGray)
+    print("Skipped: " .. skipped .. " (not installed)")
 else
+    local prog = MENU[choice]
+    print("Installing: " .. prog.name)
     print()
-    setColor(colors.red)
-    print("Installation failed.")
-    print("Check the REPO URL in the installer.")
+
+    local url = REPO .. "/" .. prog.file
+    local ok = download(url, prog.target)
+
+    if ok then
+        print()
+        setColor(colors.lime)
+        if prog.target:find("^startup/") then
+            print("Installed! Will auto-run on")
+            print("  next reboot.")
+        else
+            print("Installed! Run with:")
+            setColor(colors.white)
+            print("  " .. prog.target:gsub("%.lua$", ""))
+        end
+    else
+        print()
+        setColor(colors.red)
+        print("Installation failed.")
+        print("Check the REPO URL in the installer.")
+    end
 end
 
 setColor(colors.white)

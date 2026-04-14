@@ -165,7 +165,8 @@ local function drawScreen()
 
     -- Floor number and phase
     local info = PHASE_INFO[d.phase] or { label = d.phase or "?", color = colors.white }
-    writeLine(3, " Floor " .. (d.floor or "?") .. "  |  " .. info.label,
+    local floorLabel = d.floor_y and ("Floor Y=" .. d.floor_y) or "Floor ?"
+    writeLine(3, " " .. floorLabel .. "  |  " .. info.label,
         info.color, colors.gray)
 
     if stale then

@@ -218,13 +218,13 @@ local function detectFacingGPS()
     local gx1, _, gz1 = gpsLocate()
     if not gx1 then return nil end
 
-    -- Try to move forward, turning right if blocked
+    -- Try to move forward in the current direction, then each right-turn
+    -- until a clear direction is found. This handles the common case where
+    -- the home position has chests in front of the turtle.
     local turns = 0
     while not turtle.forward() do
-        if turtle.detect() then
-            return nil -- can't determine without digging
-        end
         turtle.turnRight()
+        facing = (facing + 1) % 4
         turns = turns + 1
         if turns >= 4 then return nil end
     end

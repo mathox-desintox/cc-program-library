@@ -94,12 +94,12 @@ end
 local function drawPage1(d, w, h)
     local line = 3
 
-    -- Floor number
+    -- Floor Y level
     term.setCursorPos(1, line)
     term.setTextColor(colors.lightGray)
-    term.write("Floor ")
+    term.write("Floor Y=")
     term.setTextColor(colors.white)
-    print(tostring(d.floor or "?"))
+    print(tostring(d.floor_y or "?"))
     line = line + 1
 
     -- Stale warning
