@@ -131,7 +131,9 @@ local state   = {
     row_z = AREA_Z_MIN,
     wall_y = 0, -- set to FLOOR_Y+1 in initLevels
     light_idx = 1,
-    home_y = 0, -- set in main() from GPS on fresh start, persisted for resume
+    home_y = 0,            -- set in main() from GPS on fresh start, persisted for resume
+    phase_elapsed = 0,     -- cumulative wall time in the current phase, survives restarts
+    phase_elapsed_key = "", -- which phase phase_elapsed belongs to (reset when phase changes)
     x = 0,
     y = 0,
     z = 0,
@@ -142,8 +144,14 @@ local state   = {
 -- PROGRESS PERSISTENCE
 ---------------------------------------------
 
+-- Forward declaration — defined after stats so it can update state.phase_elapsed
+-- based on session wall time. saveState calls this at runtime, so the upvalue
+-- is resolved lazily.
+local flushPhaseElapsed = function() end
+
 local function saveState()
     state.x, state.y, state.z, state.facing = x, y, z, facing
+    flushPhaseElapsed()
     local f = fs.open(PROGRESS_FILE, "w")
     for k, v in pairs(state) do
         f.writeLine(k .. "=" .. tostring(v))
@@ -294,18 +302,46 @@ local stats = {
     lights_placed    = 0,
     lights_total     = 0,
     program_start    = 0, -- os.clock() when program began (set once)
-    phase_start      = 0, -- os.clock() when the current phase began
+    session_phase_start = 0, -- os.clock() when this process entered the current phase
 }
 
 local lastBroadcast = 0
 local BROADCAST_INTERVAL = 2 -- seconds between auto-broadcasts
 
+-- Cumulative wall time spent in the current phase across all sessions.
+-- Combines persisted state.phase_elapsed (from prior sessions in the same
+-- phase) with the elapsed time since this session entered the phase.
+local function phaseElapsed()
+    local session = 0
+    if stats.session_phase_start > 0 then
+        session = os.clock() - stats.session_phase_start
+    end
+    return (state.phase_elapsed or 0) + session
+end
+
+-- Called by each phase once per start/resume. If we're resuming the same
+-- phase as a previous session, keep the prior accumulated elapsed; if we
+-- entered a new phase, reset to zero.
+local function markPhaseStart()
+    stats.session_phase_start = os.clock()
+    if state.phase_elapsed_key ~= state.phase then
+        state.phase_elapsed = 0
+        state.phase_elapsed_key = state.phase
+    end
+end
+
+-- Persist the current accumulated phase time so a restart can resume with
+-- the right baseline. Called from saveState. Assigns the forward-declared
+-- local so the reference in saveState resolves to this body.
+flushPhaseElapsed = function()
+    state.phase_elapsed = phaseElapsed()
+    stats.session_phase_start = os.clock()
+end
+
 local function computeETA()
-    -- Simple per-phase ETA: time elapsed in current phase / work done so far,
-    -- extrapolated to the remaining work. Recomputed on every broadcast so it
-    -- self-corrects as the rate changes.
-    if not stats.phase_start or stats.phase_start == 0 then return nil end
-    local elapsed = os.clock() - stats.phase_start
+    -- Rate = total work done in this phase / total wall time spent in it
+    -- (across sessions). Survives restarts cleanly since both values are
+    -- either persisted or reconstructed on resume.
     local done, total = 0, 0
     if stats.blocks_total > 0 then
         done, total = stats.blocks_broken, stats.blocks_total
@@ -314,9 +350,11 @@ local function computeETA()
     elseif stats.lights_total > 0 then
         done, total = stats.lights_placed, stats.lights_total
     end
-    if done <= 0 or total <= 0 or elapsed <= 0 then return nil end
+    if total <= 0 then return nil end
     local remaining = total - done
     if remaining <= 0 then return 0 end
+    local elapsed = phaseElapsed()
+    if done <= 0 or elapsed <= 0 then return nil end
     return math.floor(remaining * elapsed / done)
 end
 
@@ -895,7 +933,7 @@ local function phaseDig()
         done_blocks = done_blocks + (start_row - AREA_Z_MIN) * area_w * layers
     end
     stats.blocks_broken = done_blocks
-    stats.phase_start = os.clock()
+    markPhaseStart()
 
     for pi = start_pass, #DIG_PASSES do
         local pass = DIG_PASSES[pi]
@@ -992,7 +1030,7 @@ local function phaseCeiling()
 
     stats.place_total = (AREA_X_MAX - AREA_X_MIN + 1) * (AREA_Z_MAX - AREA_Z_MIN + 1) - 1 -- minus shaft
     stats.blocks_placed = (start_z - AREA_Z_MIN) * area_w                                 -- estimate from resume
-    stats.phase_start = os.clock()
+    markPhaseStart()
 
     -- Initial stone restock
     goHomeAndGetStone()
@@ -1032,7 +1070,7 @@ local function phaseFloor()
 
     stats.place_total = (AREA_X_MAX - AREA_X_MIN + 1) * (AREA_Z_MAX - AREA_Z_MIN + 1) - 1
     stats.blocks_placed = (start_z - AREA_Z_MIN) * area_w
-    stats.phase_start = os.clock()
+    markPhaseStart()
 
     goHomeAndGetStone()
     moveToX(SHAFT_X)
@@ -1074,7 +1112,7 @@ local function phaseWalls()
 
     stats.place_total = perimeter * total_layers
     stats.blocks_placed = perimeter * done_layers
-    stats.phase_start = os.clock()
+    markPhaseStart()
 
     local function placeWall(dir)
         if not turtle.detect() then
@@ -1151,7 +1189,7 @@ local function phaseFloorLights()
 
     stats.lights_total = #targets
     stats.lights_placed = start_idx - 1
-    stats.phase_start = os.clock()
+    markPhaseStart()
 
     goHomeAndGetLights()
     moveToX(SHAFT_X)
@@ -1198,7 +1236,7 @@ local function phaseCeilingLights()
 
     stats.lights_total = #targets
     stats.lights_placed = start_idx - 1
-    stats.phase_start = os.clock()
+    markPhaseStart()
 
     goHomeAndGetLights()
     moveToX(SHAFT_X)
@@ -1243,7 +1281,7 @@ local function phaseWallLights()
 
     stats.lights_total = #targets
     stats.lights_placed = start_idx - 1
-    stats.phase_start = os.clock()
+    markPhaseStart()
 
     goHomeAndGetLights()
     moveToX(SHAFT_X)
