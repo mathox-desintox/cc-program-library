@@ -20,6 +20,13 @@ local PROGRAMS = {
         device   = "turtle",
     },
     {
+        name     = "Farm Auto-Resume",
+        desc     = "Resume farm builder after reboot/crash",
+        file     = "farm-builder/farm_startup.lua",
+        target   = "startup/farm_resume.lua",
+        device   = "turtle",
+    },
+    {
         name     = "Floor Builder",
         desc     = "Underground floor excavation + shell + lighting",
         file     = "floor-builder/floor.lua",

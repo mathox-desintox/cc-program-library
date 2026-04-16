@@ -9,6 +9,7 @@ ComputerCraft (CC:Tweaked) turtle programs for Minecraft ATM10 modpack. Two main
 | File | Purpose |
 |---|---|
 | `farm.lua` | Builds 9x9 Mystical Agriculture farm plots with AE2 growth accelerators, pylons, ME cables. Supports underground MA growth accelerator tiers. |
+| `farm_startup.lua` | Auto-resume for the farm builder turtle after reboot/crash (5s cancel window). |
 | `floor.lua` | Excavates underground floors (101x101), builds smooth stone shell, installs staggered diagonal lattice floor/ceiling lighting and diamond-pattern wall lighting. |
 | `floor_monitor.lua` | Advanced monitor display for floor builder status via rednet. |
 | `floor_pocket.lua` | Advanced pocket computer display for floor builder status via rednet. |
