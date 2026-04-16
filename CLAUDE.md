@@ -78,12 +78,28 @@ All programs wait-and-retry on missing supplies rather than crashing:
 - Liquid encountered without stone → go home, restock, return to position
 - No modem → fatal error (monitoring is required for floor.lua)
 
-### Position tracking & GPS recovery
+### Position tracking & GPS recovery (both programs)
 - Turtle tracks its own `x, y, z, facing` via relative movement (`turtle.forward()` + `DX/DZ` tables)
-- `saveState()` is called after **every** successful movement (`fwd`, `goUp`, `goDown`, `turnRight`, `turnLeft`) so the state file always reflects actual physical position
+- `saveState()` is called after **every** successful movement (`forward`, `up`, `down`, `turnRight`, `turnLeft`) via `pcall(saveState)` so the state file always reflects actual physical position
 - On startup, `localizeGPS()` calls `gps.locate(3)` to get ground-truth coordinates and overrides the saved x/y/z
 - Facing detection: turtle tries `turtle.forward()`, compares GPS before/after to compute facing from Δx/Δz, then `turtle.back()`. Falls back to saved facing if GPS unavailable or forward is blocked
 - Works with ender modems only (regular modems can't reach a GPS constellation from far away)
+
+### farm.lua state persistence & resume
+- State file: `farm_progress` (key=value format, same as floor.lua)
+- Tracks: `mode`, `farm_idx`, `phase`, `home_x/y/z` (GPS home), `x/y/z/facing` (position)
+- On fresh start: GPS is **required** — records home position for relative↔absolute conversion
+- On resume: loads state, calls `localizeGPS()` to verify position via GPS delta from home
+- Phases per farm: `perimeter`, `ground`, `accelerators`, `structures`, `upper`
+- Resume restarts from the saved phase (phases are idempotent — replaying is safe)
+- Mode mismatch (e.g. saved "accel" but running "build") warns and discards saved state
+- `clearState()` deletes the progress file on completion
+
+### farm.lua SKIP and SEEDS
+- `"SKIP"` entries in SEEDS reserve a farm slot without building
+- Turtle flies over SKIP farms at `SKIP_TRAVEL_Y=5` (above all structures) to the farm center
+- Farm index still advances, so subsequent farms are positioned correctly
+- Both `build` and `accel` modes respect SKIP
 
 ### Rednet protocol & broadcasting
 - `mathox_base_floor_builder_v1` — unique to avoid conflicts on multiplayer server

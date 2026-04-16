@@ -45,6 +45,7 @@
 
 -- One 9x9 farm per seed type. Edit this list to match your needs.
 -- Use "EMPTY" for a plot with no seeds (farmland is tilled and fertilized but not planted).
+-- Use "SKIP" to skip a plot entirely (reserves space, turtle does nothing there).
 local SEEDS            = {
     "mysticalagriculture:gold_seeds",
     -- "EMPTY",
@@ -101,6 +102,10 @@ local CHUNK_SIZE       = 16
 local FARM_OFFSET      = 4 -- farm starts at chunk position 4 (0-indexed)
 local FARM_CENTER      = 4 -- center of the 9x9 (0-indexed within farm)
 local TRAVEL_Y         = 3 -- safe height for long-distance navigation (above cables at py=1)
+local SKIP_TRAVEL_Y    = 5 -- extra-safe height for flying over existing farms during SKIP
+local STATE_FILE       = "farm_progress"
+
+local PHASES           = { "perimeter", "ground", "accelerators", "structures", "upper" }
 
 ---------------------------------------------
 -- TURTLE STATE
@@ -114,17 +119,128 @@ local DX               = { [0] = 0, [1] = 1, [2] = 0, [3] = -1 }
 local DZ               = { [0] = 1, [1] = 0, [2] = -1, [3] = 0 }
 
 ---------------------------------------------
+-- STATE PERSISTENCE
+---------------------------------------------
+
+local state = {
+    mode      = "build",
+    farm_idx  = 0,
+    phase     = "perimeter",
+    home_x    = 0,
+    home_y    = 0,
+    home_z    = 0,
+    x         = 0,
+    y         = 0,
+    z         = 0,
+    facing    = 0,
+}
+
+local function saveState()
+    state.x = px
+    state.y = py
+    state.z = pz
+    state.facing = facing
+    local f = fs.open(STATE_FILE, "w")
+    for k, v in pairs(state) do
+        f.writeLine(k .. "=" .. tostring(v))
+    end
+    f.close()
+end
+
+local function loadState()
+    if not fs.exists(STATE_FILE) then return false end
+    local f = fs.open(STATE_FILE, "r")
+    while true do
+        local line = f.readLine()
+        if not line then break end
+        local k, v = line:match("^([%w_]+)=(.+)$")
+        if k then
+            state[k] = tonumber(v) or v
+        end
+    end
+    f.close()
+    px     = state.x
+    py     = state.y
+    pz     = state.z
+    facing = state.facing
+    return true
+end
+
+local function clearState()
+    if fs.exists(STATE_FILE) then fs.delete(STATE_FILE) end
+end
+
+---------------------------------------------
+-- GPS LOCALIZATION
+---------------------------------------------
+
+local function gpsLocate()
+    if not gps or not gps.locate then return nil end
+    local gx, gy, gz = gps.locate(3)
+    if not gx then return nil end
+    return gx, gy, gz
+end
+
+local function detectFacingGPS()
+    local x1, _, z1 = gpsLocate()
+    if not x1 then return nil end
+
+    for _ = 1, 4 do
+        if turtle.forward() then
+            local x2, _, z2 = gpsLocate()
+            turtle.back()
+            if x2 then
+                local dx = x2 - x1
+                local dz = z2 - z1
+                if dz ==  1 then return 0 end
+                if dx ==  1 then return 1 end
+                if dz == -1 then return 2 end
+                if dx == -1 then return 3 end
+            end
+            return nil
+        end
+        turtle.turnRight()
+        facing = (facing + 1) % 4
+    end
+    return nil
+end
+
+local function localizeGPS()
+    local gx, gy, gz = gpsLocate()
+    if not gx then
+        print("  GPS unavailable, using saved position")
+        return false
+    end
+
+    px = gx - state.home_x
+    py = gy - state.home_y
+    pz = gz - state.home_z
+
+    local detected = detectFacingGPS()
+    if detected then
+        facing = detected
+    else
+        print("  Facing detection failed, using saved facing")
+    end
+
+    print("  GPS position: " .. px .. ", " .. py .. ", " .. pz .. " facing=" .. facing)
+    return true
+end
+
+---------------------------------------------
 -- MOVEMENT
 ---------------------------------------------
 
 local function turnRight()
     turtle.turnRight()
     facing = (facing + 1) % 4
+    pcall(saveState)
 end
 
 local function turnLeft()
     turtle.turnLeft()
     facing = (facing - 1) % 4
+    pcall(saveState)
 end
 
 local function face(dir)
@@ -157,6 +273,7 @@ local function forward()
         if turtle.forward() then
             px = px + DX[facing]
             pz = pz + DZ[facing]
+            pcall(saveState)
             return true
         end
         turtle.dig()
@@ -171,6 +288,7 @@ local function up()
     for _ = 1, 30 do
         if turtle.up() then
             py = py + 1
+            pcall(saveState)
             return true
         end
         turtle.digUp()
@@ -184,6 +302,7 @@ local function down()
     for _ = 1, 30 do
         if turtle.down() then
             py = py - 1
+            pcall(saveState)
             return true
         end
         turtle.digDown()
@@ -659,17 +778,62 @@ end
 -- ORCHESTRATION
 ---------------------------------------------
 
-local function buildFarm(fi, seedName)
+local function phaseIndex(name)
+    for i, p in ipairs(PHASES) do
+        if p == name then return i end
+    end
+    return 1
+end
+
+local function skipFarm(fi)
+    print("========================================")
+    print("  Skipping Farm " .. (fi + 1) .. " / " .. #SEEDS)
+    print("========================================")
+
+    local cx, cz = farmWorld(fi, FARM_CENTER, FARM_CENTER)
+    while py < SKIP_TRAVEL_Y do up() end
+    if px ~= cx then
+        face(px < cx and 1 or 3)
+        while px ~= cx do forward() end
+    end
+    if pz ~= cz then
+        face(pz < cz and 0 or 2)
+        while pz ~= cz do forward() end
+    end
+
+    print("  (flew over at y=" .. SKIP_TRAVEL_Y .. ")")
+    print()
+end
+
+local function buildFarm(fi, seedName, startPhase)
+    startPhase = startPhase or "perimeter"
+
     print("========================================")
     print("  Building Farm " .. (fi + 1) .. " / " .. #SEEDS)
     print("  Seed: " .. seedName)
+    if startPhase ~= "perimeter" then
+        print("  Resuming from: " .. startPhase)
+    end
     print("========================================")
 
-    phase_perimeter(fi)
-    phase_ground_and_plant(fi, seedName)
-    phase_ma_accelerators(fi)
-    phase_structures(fi)
-    phase_upper(fi)
+    local startIdx = phaseIndex(startPhase)
+    for pi = startIdx, #PHASES do
+        state.phase = PHASES[pi]
+        saveState()
+
+        local phaseName = PHASES[pi]
+        if phaseName == "perimeter" then
+            phase_perimeter(fi)
+        elseif phaseName == "ground" then
+            phase_ground_and_plant(fi, seedName)
+        elseif phaseName == "accelerators" then
+            phase_ma_accelerators(fi)
+        elseif phaseName == "structures" then
+            phase_structures(fi)
+        elseif phaseName == "upper" then
+            phase_upper(fi)
+        end
+    end
 
     print("[Farm " .. (fi + 1) .. "] Complete!")
     print()
@@ -681,14 +845,52 @@ end
 
 local args = { ... }
 
+local function initGPS()
+    local gx, gy, gz = gpsLocate()
+    if not gx then
+        error("GPS required! Place ender modems and set up a GPS constellation.")
+    end
+    state.home_x = gx
+    state.home_y = gy
+    state.home_z = gz
+    px, py, pz = 0, 0, 0
+    facing = 0
+    print("  Home GPS: " .. gx .. ", " .. gy .. ", " .. gz)
+end
+
+local function finishRun()
+    goTo(0, 0, 0)
+    face(0)
+    face(2)
+    for s = 1, 16 do
+        if turtle.getItemCount(s) > 0 then
+            turtle.select(s)
+            turtle.drop()
+        end
+    end
+    face(0)
+    clearState()
+end
+
 local function main()
     local mode = args[1] or "build"
+    local resumed = loadState()
+
+    if resumed and state.mode ~= mode then
+        print("WARNING: Saved state is for '" .. state.mode .. "' mode but")
+        print("  running '" .. mode .. "'. Ignoring saved state.")
+        clearState()
+        resumed = false
+    end
 
     if mode == "accel" then
         -- Standalone mode: only place MA growth accelerators on existing farms
         print("==========================================")
         print("  MA Growth Accelerator Placement")
         print("  Farms: " .. #SEEDS .. "  |  Tier: " .. MA_GROWTH_TIER)
+        if resumed then
+            print("  RESUMING from farm " .. (state.farm_idx + 1))
+        end
         print("==========================================")
         print()
 
@@ -701,15 +903,34 @@ local function main()
             return
         end
 
+        state.mode = "accel"
+
+        if resumed then
+            localizeGPS()
+        else
+            initGPS()
+        end
+
         initPeripherals()
 
-        for i = 1, #SEEDS do
-            print("[Farm " .. i .. "] Placing accelerators...")
-            phase_ma_accelerators(i - 1)
+        local startIdx = resumed and state.farm_idx or 0
+
+        for i = startIdx, #SEEDS - 1 do
+            state.farm_idx = i
+            state.phase = "accelerators"
+            saveState()
+
+            if SEEDS[i + 1] == "SKIP" then
+                skipFarm(i)
+            else
+                print("[Farm " .. (i + 1) .. "] Placing accelerators...")
+                phase_ma_accelerators(i)
+            end
         end
 
         goTo(0, 0, 0)
         face(0)
+        clearState()
         print()
         print("==========================================")
         print("  Accelerator placement complete!")
@@ -718,18 +939,35 @@ local function main()
     end
 
     -- Default: full build mode
+    local skipCount = 0
+    for _, s in ipairs(SEEDS) do
+        if s == "SKIP" then skipCount = skipCount + 1 end
+    end
+    local buildCount = #SEEDS - skipCount
+
     print("==========================================")
     print("  Mystical Agriculture Farm Builder")
-    print("  Farms to build: " .. #SEEDS)
+    print("  Farms to build: " .. buildCount .. " (" .. skipCount .. " skipped)")
     if MA_GROWTH_TIER > 0 then
         print("  MA Growth Tier: " .. MA_GROWTH_TIER)
+    end
+    if resumed then
+        print("  RESUMING from farm " .. (state.farm_idx + 1) .. " phase " .. state.phase)
     end
     print("==========================================")
     print()
 
-    if #SEEDS == 0 then
-        print("No seeds configured! Edit the SEEDS table.")
+    if buildCount == 0 then
+        print("No farms to build! Edit the SEEDS table.")
         return
+    end
+
+    state.mode = "build"
+
+    if resumed then
+        localizeGPS()
+    else
+        initGPS()
     end
 
     initPeripherals()
@@ -739,21 +977,24 @@ local function main()
         print("WARNING: Low fuel (" .. fuel .. "). Stock fuel in the chest.")
     end
 
-    for i, seed in ipairs(SEEDS) do
-        buildFarm(i - 1, seed)
-    end
+    local startIdx   = resumed and state.farm_idx or 0
+    local startPhase = resumed and state.phase or "perimeter"
 
-    -- Return home and dump everything
-    goTo(0, 0, 0)
-    face(0)
-    face(2)
-    for s = 1, 16 do
-        if turtle.getItemCount(s) > 0 then
-            turtle.select(s)
-            turtle.drop()
+    for i = startIdx, #SEEDS - 1 do
+        local seed = SEEDS[i + 1]
+
+        state.farm_idx = i
+        saveState()
+
+        if seed == "SKIP" then
+            skipFarm(i)
+        else
+            local phase = (i == startIdx) and startPhase or "perimeter"
+            buildFarm(i, seed, phase)
         end
     end
-    face(0)
+
+    finishRun()
 
     print("==========================================")
     print("  All " .. #SEEDS .. " farm(s) complete!")
