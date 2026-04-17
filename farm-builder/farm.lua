@@ -16,8 +16,13 @@
 --      No need to specify sides — digDown() auto-selects the right tool:
 --        * From py=0 (ground block directly below): pickaxe breaks it
 --        * From py=1 (air below, ground 2 down): hoe tills it
---   7. Run: farm          (full build)
+--   7. Place an ENDER MODEM (wireless_modem_advanced) in the turtle's inventory
+--      (not equipped — the program swaps it in/out of the right tool slot for GPS)
+--   8. Run: farm          (full build)
 --      Run: farm accel    (only place MA growth accelerators on existing farms)
+--
+-- Required in turtle inventory (not equipped):
+--   1   ender modem            (for GPS localization)
 --
 -- Y-level reference (py=0 is turtle start height, ground surface is below):
 --   ground  Dirt/farmland checkerboard, water center, smooth stone perimeter
@@ -47,7 +52,12 @@
 -- Use "EMPTY" for a plot with no seeds (farmland is tilled and fertilized but not planted).
 -- Use "SKIP" to skip a plot entirely (reserves space, turtle does nothing there).
 local SEEDS            = {
-    "mysticalagriculture:gold_seeds",
+    "SKIP",
+    "SKIP",
+    "SKIP",
+    "SKIP",
+    "SKIP",
+    "mysticalagriculture:diamond_seeds",
     -- "EMPTY",
     -- "mysticalagriculture:prudentium_seeds",
     -- "mysticalagriculture:tertium_seeds",
@@ -71,6 +81,7 @@ local ITEMS            = {
     me_cable     = "ae2:fluix_glass_cable",
     chest        = "minecraft:chest",
     fuel         = "minecraft:coal",
+    modem        = "computercraft:wireless_modem_advanced",
 }
 
 -- Mystical Agriculture growth accelerator tiers (placed under farmland).
@@ -115,28 +126,28 @@ end
 -- TURTLE STATE
 ---------------------------------------------
 
-local px, py, pz       = 0, 0, 0
+local px, py, pz = 0, 0, 0
 -- 0 = +z (forward/into chunk), 1 = +x (right), 2 = -z (back), 3 = -x (left)
-local facing           = 0
+local facing     = 0
 
-local DX               = { [0] = 0, [1] = 1, [2] = 0, [3] = -1 }
-local DZ               = { [0] = 1, [1] = 0, [2] = -1, [3] = 0 }
+local DX         = { [0] = 0, [1] = 1, [2] = 0, [3] = -1 }
+local DZ         = { [0] = 1, [1] = 0, [2] = -1, [3] = 0 }
 
 ---------------------------------------------
 -- STATE PERSISTENCE
 ---------------------------------------------
 
-local state = {
-    mode      = "build",
-    farm_idx  = 0,
-    phase     = "perimeter",
-    home_x    = 0,
-    home_y    = 0,
-    home_z    = 0,
-    x         = 0,
-    y         = 0,
-    z         = 0,
-    facing    = 0,
+local state      = {
+    mode     = "build",
+    farm_idx = 0,
+    phase    = "perimeter",
+    home_x   = 0,
+    home_y   = 0,
+    home_z   = 0,
+    x        = 0,
+    y        = 0,
+    z        = 0,
+    facing   = 0,
 }
 
 local function saveState()
@@ -178,6 +189,36 @@ end
 -- GPS LOCALIZATION
 ---------------------------------------------
 
+local modemSwapSlot = nil
+
+local function findModem()
+    for s = 1, 16 do
+        local d = turtle.getItemDetail(s)
+        if d and d.name == ITEMS.modem then return s end
+    end
+    return nil
+end
+
+local function equipModem()
+    local slot = findModem()
+    if not slot then
+        error("Ender modem not found in inventory! Place one in the turtle.")
+    end
+    turtle.select(slot)
+    turtle.equipRight()
+    modemSwapSlot = slot
+    turtle.select(1)
+    sleep(0.1)
+end
+
+local function unequipModem()
+    if not modemSwapSlot then return end
+    turtle.select(modemSwapSlot)
+    turtle.equipRight()
+    modemSwapSlot = nil
+    turtle.select(1)
+end
+
 local function gpsLocate()
     if not gps or not gps.locate then return nil end
     local gx, gy, gz = gps.locate(3)
@@ -196,8 +237,8 @@ local function detectFacingGPS()
             if x2 then
                 local dx = x2 - x1
                 local dz = z2 - z1
-                if dz ==  1 then return 0 end
-                if dx ==  1 then return 1 end
+                if dz == 1 then return 0 end
+                if dx == 1 then return 1 end
                 if dz == -1 then return 2 end
                 if dx == -1 then return 3 end
             end
@@ -210,9 +251,12 @@ local function detectFacingGPS()
 end
 
 local function localizeGPS()
+    equipModem()
+
     local gx, gy, gz = gpsLocate()
     if not gx then
         print("  GPS unavailable, using saved position")
+        unequipModem()
         return false
     end
 
@@ -226,6 +270,8 @@ local function localizeGPS()
     else
         print("  Facing detection failed, using saved facing")
     end
+
+    unequipModem()
 
     print("  GPS position: " .. px .. ", " .. py .. ", " .. pz .. " facing=" .. facing)
     return true
@@ -855,10 +901,13 @@ end
 local args = { ... }
 
 local function initGPS()
+    equipModem()
     local gx, gy, gz = gpsLocate()
     if not gx then
+        unequipModem()
         error("GPS required! Place ender modems and set up a GPS constellation.")
     end
+    unequipModem()
     state.home_x = gx
     state.home_y = gy
     state.home_z = gz
