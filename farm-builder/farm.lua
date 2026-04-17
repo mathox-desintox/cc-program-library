@@ -107,6 +107,10 @@ local STATE_FILE       = "farm_progress"
 
 local PHASES           = { "perimeter", "ground", "accelerators", "structures", "upper" }
 
+local function isSkip(seedName)
+    return type(seedName) == "string" and seedName:upper() == "SKIP"
+end
+
 ---------------------------------------------
 -- TURTLE STATE
 ---------------------------------------------
@@ -806,6 +810,11 @@ local function skipFarm(fi)
 end
 
 local function buildFarm(fi, seedName, startPhase)
+    if isSkip(seedName) then
+        skipFarm(fi)
+        return
+    end
+
     startPhase = startPhase or "perimeter"
 
     print("========================================")
@@ -920,7 +929,7 @@ local function main()
             state.phase = "accelerators"
             saveState()
 
-            if SEEDS[i + 1] == "SKIP" then
+            if isSkip(SEEDS[i + 1]) then
                 skipFarm(i)
             else
                 print("[Farm " .. (i + 1) .. "] Placing accelerators...")
@@ -941,7 +950,7 @@ local function main()
     -- Default: full build mode
     local skipCount = 0
     for _, s in ipairs(SEEDS) do
-        if s == "SKIP" then skipCount = skipCount + 1 end
+        if isSkip(s) then skipCount = skipCount + 1 end
     end
     local buildCount = #SEEDS - skipCount
 
@@ -986,7 +995,7 @@ local function main()
         state.farm_idx = i
         saveState()
 
-        if seed == "SKIP" then
+        if isSkip(seed) then
             skipFarm(i)
         else
             local phase = (i == startIdx) and startPhase or "perimeter"
