@@ -138,15 +138,16 @@ local DZ         = { [0] = 1, [1] = 0, [2] = -1, [3] = 0 }
 ---------------------------------------------
 
 local state      = {
-    mode     = "build",
-    farm_idx = 0,
-    phase    = "perimeter",
-    home_x   = 0,
-    home_y   = 0,
-    home_z   = 0,
-    x        = 0,
-    y        = 0,
-    z        = 0,
+    mode         = "build",
+    farm_idx     = 0,
+    phase        = "perimeter",
+    home_x       = 0,
+    home_y       = 0,
+    home_z       = 0,
+    home_facing  = 0,
+    x            = 0,
+    y            = 0,
+    z            = 0,
     facing   = 0,
 }
 
@@ -264,9 +265,9 @@ local function localizeGPS()
     py = gy - state.home_y
     pz = gz - state.home_z
 
-    local detected = detectFacingGPS()
-    if detected then
-        facing = detected
+    local worldFacing = detectFacingGPS()
+    if worldFacing then
+        facing = (worldFacing - state.home_facing) % 4
     else
         print("  Facing detection failed, using saved facing")
     end
@@ -912,13 +913,22 @@ local function initGPS()
         unequipModem()
         error("GPS required! Place ender modems and set up a GPS constellation.")
     end
+
+    local worldFacing = detectFacingGPS()
     unequipModem()
+
+    if not worldFacing then
+        error("Could not detect facing! Clear the block in front of the turtle.")
+    end
+
     state.home_x = gx
     state.home_y = gy
     state.home_z = gz
+    state.home_facing = worldFacing
     px, py, pz = 0, 0, 0
     facing = 0
     print("  Home GPS: " .. gx .. ", " .. gy .. ", " .. gz)
+    print("  Home world facing: " .. worldFacing)
 end
 
 local function finishRun()
