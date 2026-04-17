@@ -89,7 +89,7 @@ local ITEMS            = {
 -- All tiers up to and including this level are placed.
 -- Each tier is a 9-block layer. E.g. tier 3 = 27 blocks deep per farmland block:
 --   farmland -> 9x inferium -> 9x prudentium -> 9x tertium (deepest)
-local MA_GROWTH_TIER   = 3
+local MA_GROWTH_TIER   = 0
 -- If extending from a previous run, set this to the tier already placed.
 -- E.g. previously ran with tier 3, now want tier 5: set MA_GROWTH_TIER=5, MA_EXISTING_TIER=3
 -- The program will only place tiers 4 and 5, digging below the existing accelerators.
@@ -436,13 +436,17 @@ local function initPeripherals()
     print("  Buffer chest: " .. bufferName)
 end
 
--- Go home and void all non-fuel items into trash can below
+local function isKeepItem(name)
+    return name == ITEMS.fuel or name == ITEMS.modem
+end
+
+-- Go home and void all non-essential items into trash can below
 local function voidWaste()
     goTo(0, 0, 0)
     face(0)
     for s = 1, 16 do
         local d = turtle.getItemDetail(s)
-        if d and d.name ~= ITEMS.fuel then
+        if d and not isKeepItem(d.name) then
             turtle.select(s)
             turtle.dropDown() -- into trash can below turtle
         end
@@ -455,10 +459,11 @@ local function restock(list)
     goTo(0, 0, 0)
     face(0) -- face forward first for consistent sides
 
-    -- Step 1: Dump current inventory into supply chest
+    -- Step 1: Dump current inventory into supply chest (keep modem)
     face(2)
     for s = 1, 16 do
-        if turtle.getItemCount(s) > 0 then
+        local d = turtle.getItemDetail(s)
+        if d and not isKeepItem(d.name) then
             turtle.select(s)
             turtle.drop()
         end
@@ -921,7 +926,8 @@ local function finishRun()
     face(0)
     face(2)
     for s = 1, 16 do
-        if turtle.getItemCount(s) > 0 then
+        local d = turtle.getItemDetail(s)
+        if d and not isKeepItem(d.name) then
             turtle.select(s)
             turtle.drop()
         end
@@ -965,6 +971,8 @@ local function main()
 
         if resumed then
             localizeGPS()
+            goTo(0, 0, 0)
+            face(0)
         else
             initGPS()
         end
@@ -1024,6 +1032,8 @@ local function main()
 
     if resumed then
         localizeGPS()
+        goTo(0, 0, 0)
+        face(0)
     else
         initGPS()
     end
