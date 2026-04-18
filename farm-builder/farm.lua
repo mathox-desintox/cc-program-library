@@ -57,7 +57,9 @@ local SEEDS            = {
     "SKIP",
     "SKIP",
     "SKIP",
-    "mysticalagriculture:diamond_seeds",
+    "SKIP",
+    "mysticalagriculture:uranium_seeds",
+    "mysticalagriculture:uranium_seeds"
     -- "EMPTY",
     -- "mysticalagriculture:prudentium_seeds",
     -- "mysticalagriculture:tertium_seeds",
@@ -138,17 +140,17 @@ local DZ         = { [0] = 1, [1] = 0, [2] = -1, [3] = 0 }
 ---------------------------------------------
 
 local state      = {
-    mode         = "build",
-    farm_idx     = 0,
-    phase        = "perimeter",
-    home_x       = 0,
-    home_y       = 0,
-    home_z       = 0,
-    home_facing  = 0,
-    x            = 0,
-    y            = 0,
-    z            = 0,
-    facing   = 0,
+    mode        = "build",
+    farm_idx    = 0,
+    phase       = "perimeter",
+    home_x      = 0,
+    home_y      = 0,
+    home_z      = 0,
+    home_facing = 0,
+    x           = 0,
+    y           = 0,
+    z           = 0,
+    facing      = 0,
 }
 
 local function saveState()
@@ -228,6 +230,22 @@ local function gpsLocate()
 end
 
 local function detectFacingGPS()
+    local fuel = turtle.getFuelLevel()
+    if fuel ~= "unlimited" and fuel < 2 then
+        print("  Not enough fuel for facing detection (need 2, have " .. fuel .. ")")
+        print("  Place fuel in the turtle and press any key...")
+        os.pullEvent("key")
+        for s = 1, 16 do
+            local d = turtle.getItemDetail(s)
+            if d and d.name == ITEMS.fuel then
+                turtle.select(s)
+                turtle.refuel(math.min(d.count, 8))
+                break
+            end
+        end
+        turtle.select(1)
+    end
+
     local x1, _, z1 = gpsLocate()
     if not x1 then return nil end
 
