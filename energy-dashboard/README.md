@@ -32,43 +32,33 @@ Packet envelope: `{ version, kind, src = {id, role}, ts, payload }`. Version mis
 
 ## Install
 
-All three components install via **`edi`** (Energy Dashboard Installer). It fetches `build/manifest.json` from GitHub and downloads just the files each component needs into the right paths. State is tracked in `/.edi_state` so `update` and `uninstall` know what was installed.
-
-### One-time: publish the installer to pastebin
-
-Upload `edi.lua` to pastebin once. Any account works:
-
-```
-pastebin put edi.lua        # prints a code, e.g. "ABC12345"
-```
-
-Note that code — that's your stable entry point from any new computer.
-
-> Until the user publishes a code here, the placeholder below is `F3bHqTDi`.
-
-### On each computer
+All three components install via **`edi`** (Energy Dashboard Installer). Run this one command on each computer; arrow-key menu picks the component, `edi` downloads the right files from this repo into the right paths.
 
 ```
 pastebin run F3bHqTDi
 ```
 
-Navigate the arrow-key menu, pick a component:
+Menu actions:
 
 - `[install]   collector`  — for the computer next to a flux accessor
 - `[install]   core`       — for the middle-tier aggregator (any computer)
 - `[install]   panel`      — for the computer with the monitor
-- `[update]    all installed` — re-fetch every installed component after you change the repo
+- `[update]    all installed` — re-fetch every installed component (run this after repo changes)
 - `[uninstall] ...`        — list + remove any component's files
 
-After install you're shown the command to run (e.g. `collector`). On subsequent runs, just re-run `pastebin run F3bHqTDi` → `[update]    all installed` to pull the latest.
+After install you're shown the command to run (e.g. `collector`). To update later, just re-run `pastebin run F3bHqTDi` → `[update]    all installed`.
 
 ### State file
 
-The installer writes `/.edi_state` with a list of installed components, their versions, and every file they placed. Safe to delete if you want a clean slate (you'll lose the "update" and "uninstall" shortcuts but won't break running programs).
+The installer writes `/.edi_state` with the list of installed components, their versions, and every file they placed. Safe to delete if you want a clean slate — it won't break running programs, you'll just lose the `update` / `uninstall` shortcuts for that computer.
 
 ### Core's data file
 
 The core (separately from the installer) writes `/edash_core.dat` every 30 s with lifetime produced/consumed totals and uptime. Safe to delete to reset counters — histories are kept only in RAM anyway.
+
+### Re-publishing the installer
+
+The pastebin entry above (`F3bHqTDi`) is the stable entry point. If you fork this repo or want your own, upload your modified [`edi.lua`](edi.lua) to pastebin once via `pastebin put edi.lua` and update the command above with your code.
 
 ## What the panel shows
 
