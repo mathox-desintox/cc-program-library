@@ -246,52 +246,52 @@ local function render(mon)
     local bucket_v, bucket_ts = bucket_stored(stored_vals, stored_ts, chart_w, window_ms)
     local rates               = bucket_to_rates(bucket_v, bucket_ts, chart_w)
 
-    local s
-    local have_enough = sparse_count(rates, chart_w) >= (hz.min_samples or 2)
-    if have_enough then
-        s = chart.line_chart(mon, chart_x, chart_top, chart_w, chart_h, rates, {
-            pos_color  = THEME.charging,
-            neg_color  = THEME.draining,
-            zero_color = THEME.bar_empty,
-            bg         = THEME.bg,
-        })
-    else
-        -- "Need more data" panel. Shows how much has been collected vs. the
-        -- minimum threshold so the user knows whether to wait or switch tabs.
-        local have  = sparse_count(rates, chart_w)
-        local need  = hz.min_samples or 2
-        local line1 = string.format("Need more data for the %s window.", hz.label)
-        local line2 = string.format("collected %d / %d buckets so far", have, need)
-        local line3
-        if hz.tier == "h1" or hz.tier == "h6" or hz.tier == "m5" then
-            line3 = "longer horizons build up slowly; keep the core running."
-        else
-            line3 = "waiting for the core to fill the history buffer..."
-        end
-        local mid = chart_top + math.floor(chart_h / 2) - 1
-        gfx.write(mon, chart_x, mid,     line1, P.warn)
-        gfx.write(mon, chart_x, mid + 1, line2, P.label)
-        gfx.write(mon, chart_x, mid + 2, line3, P.label)
-    end
+    -- The chart is always drawn: line_chart handles sparse arrays and
+    -- just leaves a blank column wherever a bucket has no samples yet.
+    -- That covers the "window not fully populated" case naturally -
+    -- newest data appears on the right, older (unfilled) slots on the
+    -- left stay empty until the history buffer catches up.
+    local s = chart.line_chart(mon, chart_x, chart_top, chart_w, chart_h, rates, {
+        pos_color  = THEME.charging,
+        neg_color  = THEME.draining,
+        zero_color = THEME.bar_empty,
+        bg         = THEME.bg,
+    })
 
     -- Stats block below the chart.
-    local row = chart_bot + 2
-    if have_enough and s then
-        local rate_s   = window_rate(stored_vals, stored_ts)
-        local vol_pct  = (s.mean ~= 0) and (s.stdev / math.abs(s.mean) * 100) or 0
-        local col2     = 2 + math.floor(w / 2)
+    local have        = sparse_count(rates, chart_w)
+    local need        = hz.min_samples or 2
+    local have_enough = have >= need
+    local row  = chart_bot + 2
+    local col2 = 2 + math.floor(w / 2)
+
+    if s then
+        local rate_s  = window_rate(stored_vals, stored_ts)
+        local vol_pct = (s.mean ~= 0) and (s.stdev / math.abs(s.mean) * 100) or 0
         gfx.indicator(mon, 2,    row, "rate",  6, util.fmtRate(rate_s, RATE_UNIT), P.label, rate_color(rate_s))
         gfx.indicator(mon, col2, row, "vol",   5, string.format("%.2f%%", vol_pct),  P.label, P.value)
         row = row + 1
-        -- High/low of the bucketed RATE series (charging peak / deepest
-        -- draw within the window). +/- prefix makes the axis obvious.
-        gfx.indicator(mon, 2,    row, "peak+", 6, util.fmtRate(s.max, RATE_UNIT),   P.label, P.ok)
-        gfx.indicator(mon, col2, row, "peak-", 5, util.fmtRate(s.min, RATE_UNIT),   P.label, P.warn)
+        gfx.indicator(mon, 2,    row, "peak+", 6, util.fmtRate(s.max, RATE_UNIT), P.label, P.ok)
+        gfx.indicator(mon, col2, row, "peak-", 5, util.fmtRate(s.min, RATE_UNIT), P.label, P.warn)
         row = row + 1
+    else
+        -- No rate samples at all yet: leave the first two rows empty but
+        -- still advance `row` so the partial-data notice below shows up
+        -- in the usual ETA slot.
+        row = row + 2
+    end
+
+    if have_enough then
         local eta_text = "idle"
-        if agg.eta_to_full_s       then eta_text = "to full: "  .. util.fmtDuration(agg.eta_to_full_s)
-        elseif agg.eta_to_empty_s  then eta_text = "to empty: " .. util.fmtDuration(agg.eta_to_empty_s) end
+        if     agg.eta_to_full_s  then eta_text = "to full: "  .. util.fmtDuration(agg.eta_to_full_s)
+        elseif agg.eta_to_empty_s then eta_text = "to empty: " .. util.fmtDuration(agg.eta_to_empty_s) end
         gfx.indicator(mon, 2, row, "ETA", 6, eta_text, P.label, P.value)
+    else
+        -- Partial window: chart's left side is blank until enough buckets
+        -- fill in. Flag the calculated values as tentative and show the
+        -- progress count in the ETA slot.
+        local notice = string.format("building %s window: %d / %d", hz.label, have, need)
+        gfx.write(mon, 2, row, notice, P.warn)
     end
 
     -- Fill bar row + % label inline.
