@@ -224,6 +224,10 @@ end
 
 local function arrow_menu(items, title, right_text, footer_text)
     local sel = first_selectable(items)
+    -- Layout state is re-computed per render so mouse-click hit-testing
+    -- can reuse it. We stash it in `rendered` between draw + input.
+    local rendered = { start_y = 3, max_rows = 0, offset = 0 }
+
     while true do
         clear_screen()
         draw_title_bar(title or "Energy Dashboard Installer", right_text)
@@ -232,15 +236,13 @@ local function arrow_menu(items, title, right_text, footer_text)
         local _, h = screen_wh()
         local start_y = 3
 
-        -- Reserve the bottom of the screen for a detail panel showing the
-        -- selected item's description (divider row + 3 wrap lines = 4 rows)
-        -- plus the footer. Falls back to list-only on very short terminals.
-        local detail_height = 4    -- includes the "-- detail ---" divider row
+        -- Reserve the bottom for a detail panel + a footer row. Falls back
+        -- to list-only on very short terminals.
+        local detail_height = 4
         local footer_reserve = 1
         local list_reserve = detail_height + footer_reserve
         local max_rows = math.max(1, h - start_y - list_reserve)
         if h - start_y - footer_reserve < detail_height + 3 then
-            -- too short for a detail panel; give the list all the space
             detail_height = 0
             max_rows = math.max(1, h - start_y - footer_reserve)
         end
@@ -248,33 +250,68 @@ local function arrow_menu(items, title, right_text, footer_text)
         local offset = 0
         if #items > max_rows then offset = math.min(sel - 1, #items - max_rows) end
 
+        rendered.start_y = start_y
+        rendered.max_rows = max_rows
+        rendered.offset = offset
+
         for i = 1, math.min(max_rows, #items) do
             local idx = i + offset
             local it = items[idx]
             if it then draw_menu_item(start_y + i - 1, it, idx == sel) end
         end
 
-        -- Detail panel shows the selected item's full desc, word-wrapped.
         if detail_height > 0 then
             local current = items[sel] or {}
             draw_detail_panel(h - footer_reserve - detail_height + 1, detail_height, current.desc or "")
         end
 
-        draw_footer_bar(footer_text or " \24\25  navigate     enter select     q  quit")
+        draw_footer_bar(footer_text or " \24\25  nav  |  enter / click  select  |  q  quit")
 
-        local _, key = os.pullEvent("key")
-        if key == keys.up then
-            local i = sel - 1
-            while i >= 1 and not is_selectable(items[i]) do i = i - 1 end
-            if i >= 1 then sel = i end
-        elseif key == keys.down then
-            local i = sel + 1
-            while i <= #items and not is_selectable(items[i]) do i = i + 1 end
-            if i <= #items then sel = i end
-        elseif key == keys.home then sel = first_selectable(items)
-        elseif key == keys.end_ then sel = last_selectable(items)
-        elseif key == keys.enter then return items[sel]
-        elseif key == keys.q then return nil
+        local event, p1, p2, p3 = os.pullEvent()
+
+        if event == "key" then
+            local key = p1
+            if key == keys.up then
+                local i = sel - 1
+                while i >= 1 and not is_selectable(items[i]) do i = i - 1 end
+                if i >= 1 then sel = i end
+            elseif key == keys.down then
+                local i = sel + 1
+                while i <= #items and not is_selectable(items[i]) do i = i + 1 end
+                if i <= #items then sel = i end
+            elseif key == keys.home then sel = first_selectable(items)
+            elseif key == keys.end_ then sel = last_selectable(items)
+            elseif key == keys.enter then return items[sel]
+            elseif key == keys.q then return nil
+            end
+
+        elseif event == "mouse_click" and p1 == 1 then
+            -- Left click: if the click falls on a selectable row, activate
+            -- it (same as select + enter). Clicks outside the list do nothing.
+            local _, cy = p2, p3
+            local row = cy - rendered.start_y + 1
+            if row >= 1 and row <= rendered.max_rows then
+                local idx = row + rendered.offset
+                local it = items[idx]
+                if it and is_selectable(it) then
+                    sel = idx
+                    return it
+                end
+            end
+
+        elseif event == "mouse_scroll" then
+            -- p1 = direction (-1 up, +1 down). Advance selection in that
+            -- direction, skipping non-selectable rows.
+            local dir = p1
+            if dir < 0 then
+                local i = sel - 1
+                while i >= 1 and not is_selectable(items[i]) do i = i - 1 end
+                if i >= 1 then sel = i end
+            elseif dir > 0 then
+                local i = sel + 1
+                while i <= #items and not is_selectable(items[i]) do i = i + 1 end
+                if i <= #items then sel = i end
+            end
         end
     end
 end
