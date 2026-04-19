@@ -1,72 +1,76 @@
--- energy-dashboard collector (MVP).
+-- energy-dashboard/collector/collector.lua
 --
--- Finds a flux_accessor_ext peripheral (provided by the appflux-cc-patch
--- server mod) and broadcasts its readings periodically on rednet protocol
--- "edash_v1". One collector per AE2 network; run on a computer adjacent to
--- (or wired-modem'd to) a flux accessor, with a wireless/ender modem.
+-- RTU-style leaf program. Wraps a single flux_accessor_ext peripheral
+-- (provided by the appflux-cc-patch server mod) and broadcasts its
+-- readings once per second to whichever core listens on PROTO_DATA.
+--
+-- Run on a computer next to (or wired-modem'd to) a flux accessor, with a
+-- wireless/ender modem attached.
 
-local PROTOCOL     = "edash_v1"
-local MSG_TYPE     = "flux_state"
-local TICK_SECONDS = 1
+local comms = require("common.comms")
+local log   = require("common.log")
+local ppm   = require("common.ppm")
 
-local function fatal(fmt, ...) error(string.format(fmt, ...), 0) end
+-- ─── config ──────────────────────────────────────────────────────────────
 
-local function openAnyModem()
-    for _, side in ipairs(peripheral.getNames()) do
-        if peripheral.getType(side) == "modem" then
-            rednet.open(side)
-            return side
-        end
+local TICK_SECONDS    = 1     -- how often we read + broadcast
+local RETRY_SECONDS   = 5     -- retry cadence when peripheral missing
+local PERIPHERAL_TYPE = "flux_accessor_ext"
+
+-- ─── helpers ─────────────────────────────────────────────────────────────
+
+local function snapshot(accessor)
+    local function safe(method)
+        local ok, v = ppm.call(accessor, method)
+        return ok and v or nil
     end
-    fatal("no modem found — attach a wireless/ender modem to any side")
-end
-
-local function findAccessor()
-    -- peripheral.find returns the first wrapped match or nil
-    return peripheral.find("flux_accessor_ext")
-end
-
-local function snapshot(a)
     return {
-        stored         = a.getEnergyLong(),
-        storedString   = a.getEnergyString(),
-        capacity       = a.getEnergyCapacityLong(),
-        capacityString = a.getEnergyCapacityString(),
-        online         = a.isOnline(),
-        cellCount      = a.getNetworkFluxCellCount(),
+        stored         = safe("getEnergyLong")         or 0,
+        storedString   = safe("getEnergyString")       or "0",
+        capacity       = safe("getEnergyCapacityLong") or 0,
+        capacityString = safe("getEnergyCapacityString") or "0",
+        online         = safe("isOnline") == true,
+        cellCount      = safe("getNetworkFluxCellCount") or 0,
+        -- Reserved for future multi-network support; for now a single
+        -- logical network per collector.
+        networkId      = "default",
     }
 end
 
 local function broadcast(state)
-    rednet.broadcast({
-        type = MSG_TYPE,
-        src  = os.getComputerID(),
-        ts   = os.epoch("utc"),
-        data = state,
-    }, PROTOCOL)
+    local pkt = comms.packet(comms.KIND.COLLECTOR_STATE, comms.ROLE.COLLECTOR, state)
+    rednet.broadcast(pkt, comms.PROTO_DATA)
 end
 
 -- ─── main ────────────────────────────────────────────────────────────────
 
-local modemSide = openAnyModem()
-print(string.format("[collector] modem on %s, protocol=%s", modemSide, PROTOCOL))
+log.init("collector", log.LEVEL.INFO)
+log.info("starting")
+
+local sides = comms.open_all_modems()
+if #sides == 0 then log.error("no modem found — attach a wireless/ender modem"); error("no modem", 0) end
+log.info("opened modems on: " .. table.concat(sides, ", "))
 
 while true do
-    local a = findAccessor()
-    if not a then
-        print("[collector] no flux_accessor_ext peripheral found; retrying in 5s")
-        print("  - install appflux-cc-patch on the server")
-        print("  - place/wire a flux accessor adjacent or via modem network")
-        sleep(5)
+    local accessor, name = ppm.find_one(PERIPHERAL_TYPE)
+    if not accessor then
+        log.warn("no " .. PERIPHERAL_TYPE .. " peripheral found; retrying in " .. RETRY_SECONDS .. "s")
+        log.warn("  - appflux-cc-patch installed on the server?")
+        log.warn("  - accessor adjacent or on a wired modem network?")
+        sleep(RETRY_SECONDS)
     else
-        local ok, state = pcall(snapshot, a)
-        if ok then
-            broadcast(state)
-            io.write(string.format("\r[collector] online=%s stored=%s cells=%d   ",
-                tostring(state.online), state.storedString, state.cellCount))
-        else
-            print("\n[collector] snapshot error: " .. tostring(state))
+        log.info("peripheral wrapped at " .. tostring(name))
+        while ppm.is_live(name) do
+            local ok, state = pcall(snapshot, accessor)
+            if ok and state then
+                broadcast(state)
+                io.write(string.format("\r[collector] online=%s stored=%s cells=%d   ",
+                    tostring(state.online), state.storedString, state.cellCount))
+            else
+                log.warn("snapshot error: " .. tostring(state))
+            end
+            sleep(TICK_SECONDS)
         end
-        sleep(TICK_SECONDS)
+        log.warn("peripheral disconnected; rescanning")
     end
 end
