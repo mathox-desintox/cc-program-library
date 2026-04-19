@@ -168,28 +168,45 @@ function M.line_chart(mon, x, y, w, h, values, opts)
     local s = stats_sparse(values, w)
     if not s then return nil end
 
-    -- Always include zero in the span so the baseline is meaningful and
-    -- flat-rate periods stay at a constant y instead of filling the box.
-    local vmax = math.max(s.max, 0)
-    local vmin = math.min(s.min, 0)
+    -- Auto-scale strategy:
+    --   same-sign series : tight range [min, max] with a small padding
+    --                       so 1-2% variations use the full chart height.
+    --                       Zero baseline is off-screen but the pos/neg
+    --                       bar colour still carries the sign.
+    --   mixed signs      : anchor zero on the chart so positive and
+    --                       negative excursions are drawn above / below.
+    local vmin, vmax, baseline_row
+    if s.min >= 0 and s.max >= 0 and s.max > 0 then
+        -- All non-negative, values cluster near max: zoom in.
+        local pad = (s.max - s.min) * 0.1
+        if pad <= 0 then pad = math.abs(s.max) * 0.05 + 1 end
+        vmin = math.max(0, s.min - pad)
+        vmax = s.max + pad
+        baseline_row = h - 1                              -- off-screen below
+    elseif s.max <= 0 and s.min <= 0 and s.min < 0 then
+        -- All non-positive: zoom in on the negative range.
+        local pad = (s.max - s.min) * 0.1
+        if pad <= 0 then pad = math.abs(s.min) * 0.05 + 1 end
+        vmin = s.min - pad
+        vmax = math.min(0, s.max + pad)
+        baseline_row = 0                                  -- off-screen above
+    else
+        -- Mixed: keep the zero-anchored layout.
+        vmax = math.max(s.max, 0)
+        vmin = math.min(s.min, 0)
+        baseline_row = math.floor(vmax / (vmax - vmin) * (h - 1) + 0.5)
+    end
+
     local span = vmax - vmin
     if span <= 0 then span = 1 end
 
-    -- Row where zero sits (0-indexed from top).
-    local baseline_row
-    if s.min >= 0 then
-        baseline_row = h - 1
-    elseif s.max <= 0 then
-        baseline_row = 0
-    else
-        baseline_row = math.floor(vmax / span * (h - 1) + 0.5)
-    end
-
-    -- Draw the zero line first.
-    mon.setBackgroundColor(zero_color)
-    for c = 0, w - 1 do
-        mon.setCursorPos(x + c, y + baseline_row)
-        mon.write(" ")
+    -- Draw the zero line only if it falls inside the visible range.
+    if baseline_row >= 0 and baseline_row < h and vmin <= 0 and vmax >= 0 then
+        mon.setBackgroundColor(zero_color)
+        for c = 0, w - 1 do
+            mon.setCursorPos(x + c, y + baseline_row)
+            mon.write(" ")
+        end
     end
 
     -- Compute each column's row position.

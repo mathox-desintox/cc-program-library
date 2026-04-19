@@ -15,7 +15,7 @@ local util      = require("common.util")
 local configlib = require("common.config")
 local status    = require("common.status")
 
-local COMPONENT_VERSION = "0.7.1"
+local COMPONENT_VERSION = "0.7.2"
 
 -- First-run wizard: auto-launch `configure` on first boot so intervals,
 -- state-file path, and log-file path can be adjusted before anything
@@ -544,9 +544,14 @@ local function broadcast_aggregate()
     -- the snappy single-tick `network_stored` stays on the panel's
     -- "Stored" readout.
     push_network_sample(payload.network_stored_avg or payload.network_stored or 0, now_ms)
+    -- Ship wall-clock timestamps on EVERY tier. Reconstructing ts from
+    -- interval_ms at the panel silently miscomputes rates whenever
+    -- broadcast cadence jitters (sleep drift, server pause, core
+    -- restart) because the numerator of the rate reflects real wall
+    -- time but the denominator uses the assumed interval.
     payload.history = {
-        s1 = serialize_ring(net_history_s1,             1000, false),
-        m1 = serialize_ring(net_history_m1,        60 * 1000, false),
+        s1 = serialize_ring(net_history_s1,             1000, true),
+        m1 = serialize_ring(net_history_m1,        60 * 1000, true),
         m5 = serialize_ring(net_history_m5,    5 * 60 * 1000, true),
         h1 = serialize_ring(net_history_h1,   60 * 60 * 1000, true),
         h6 = serialize_ring(net_history_h6, 6 * 60 * 60 * 1000, true),

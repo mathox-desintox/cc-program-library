@@ -16,7 +16,7 @@ local themes    = require("graphics.themes")
 local configlib = require("common.config")
 local status    = require("common.status")
 
-local COMPONENT_VERSION = "0.7.1"
+local COMPONENT_VERSION = "0.7.2"
 
 -- First-run wizard: auto-launch `configure` on first boot so the user
 -- picks which monitor + rate unit they want before we start drawing.
@@ -91,9 +91,11 @@ end
 -- --- rendering -----------------------------------------------------------
 
 -- Take the newest `count` entries from a serialized tier. Returns two
--- parallel arrays (values, timestamps) in oldest->newest order. The
--- timestamps array is reconstructed from interval_ms when the core
--- didn't ship per-sample ts (short horizons).
+-- parallel arrays (values, timestamps) in oldest->newest order. Core
+-- 0.7.2+ ships wall-clock timestamps on every tier; older cores might
+-- omit them, in which case we reconstruct from interval_ms as a
+-- best-effort fallback (rate math will drift across broadcast jitter
+-- / gaps but at least ordering is preserved).
 local function tail_series(tier, count)
     if not tier or not tier.values then return {}, {} end
     local src = tier.values
@@ -104,12 +106,10 @@ local function tail_series(tier, count)
     local values, ts = {}, {}
     for i = lo, n do values[#values + 1] = src[i] end
 
-    local interval = tier.interval_ms or 1000
     if tier.ts then
         for i = lo, n do ts[#ts + 1] = tier.ts[i] end
     else
-        -- Reconstruct ts from a synthetic newest = now. We only use this
-        -- to ORDER samples; absolute values don't matter for rendering.
+        local interval = tier.interval_ms or 1000
         local now_ms = os.epoch("utc")
         for i = lo, n do ts[#ts + 1] = now_ms - (n - i) * interval end
     end
@@ -148,13 +148,24 @@ end
 -- where prev is the most recent earlier bucket that had a sample. This
 -- naturally stretches rate across holes (downtime) and produces nil for
 -- columns that had no sample at all (so the chart renders a gap).
-local function bucket_to_rates(bucket_v, bucket_ts, width)
+--
+-- `min_dt_ms` rejects pairs whose wall-clock separation is suspiciously
+-- short compared to the bucket width. Those cases produce wildly
+-- inflated rate values because the numerator reflects real change over
+-- roughly a bucket's worth of time while the denominator collapses to
+-- a fraction of that. Typically seen at cold start when the first two
+-- filled buckets have their representative samples near their shared
+-- boundary.
+local function bucket_to_rates(bucket_v, bucket_ts, width, min_dt_ms)
     local rates = {}
     local prev_v, prev_ts
     for b = 1, width do
         if bucket_v[b] ~= nil then
             if prev_v ~= nil and bucket_ts[b] > prev_ts then
-                rates[b] = (bucket_v[b] - prev_v) / ((bucket_ts[b] - prev_ts) / 1000)
+                local dt_ms = bucket_ts[b] - prev_ts
+                if not min_dt_ms or dt_ms >= min_dt_ms then
+                    rates[b] = (bucket_v[b] - prev_v) / (dt_ms / 1000)
+                end
             end
             prev_v, prev_ts = bucket_v[b], bucket_ts[b]
         end
@@ -244,7 +255,12 @@ local function render(mon)
     local stored_vals, stored_ts = tail_series(tier, hz.count)
     local window_ms = hz.window_s * 1000
     local bucket_v, bucket_ts = bucket_stored(stored_vals, stored_ts, chart_w, window_ms)
-    local rates               = bucket_to_rates(bucket_v, bucket_ts, chart_w)
+    -- Reject rate pairs whose dt is under half a bucket-width: those
+    -- are always artefacts of two buckets happening to anchor on samples
+    -- close in time, and they're the main source of the garbage
+    -- peak+/peak-/vol values that otherwise dwarf real extremes.
+    local min_dt_ms           = (window_ms / chart_w) * 0.5
+    local rates               = bucket_to_rates(bucket_v, bucket_ts, chart_w, min_dt_ms)
 
     -- The chart is always drawn: line_chart handles sparse arrays and
     -- just leaves a blank column wherever a bucket has no samples yet.
