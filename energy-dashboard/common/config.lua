@@ -18,10 +18,15 @@ M.FIRST_RUN_FLAG = "/.edash_first_run_done"
 -- Keep the schema flat and well-named; configure.lua drives its UI from
 -- this table, so adding a new knob here also adds it to the UI.
 M.DEFAULTS = {
+    -- Shared across every component on this computer. network_id is the
+    -- per-world "team" identifier — lets multiple independent dashboards
+    -- coexist on the same ender-modem broadcast domain. All packets are
+    -- stamped with it and receivers silently drop mismatches.
+    network_id = "default",
+
     collector = {
-        peripheral   = nil,        -- auto-pick first flux_accessor_ext if nil
-        tick_seconds = 1,          -- broadcast cadence
-        network_id   = "default",  -- for future multi-network support
+        peripheral   = nil,   -- auto-pick first flux_accessor_ext if nil
+        tick_seconds = 1,     -- broadcast cadence
     },
     core = {
         broadcast_interval_ms = 1000,

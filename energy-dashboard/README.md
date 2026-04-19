@@ -60,10 +60,12 @@ configure
 
 Arrow-key menu; it auto-detects which components are installed on this computer (by reading `/.edi_state`) and shows only those. Inside each component you can:
 
+**Shared** (applies to every component on this computer)
+- `network_id` — per-world "team" string, defaults to `default`. All outgoing packets are stamped with it and receivers silently drop mismatches, so multiple independent dashboards can coexist on the same ender-modem broadcast domain. Set this to something unique per deployment.
+
 **collector**
 - `peripheral` — pick the `flux_accessor_ext` to use (autodetect lists attached accessors)
 - `tick_seconds` — broadcast cadence (default 1)
-- `network_id` — reserved for future multi-network deployments
 
 **core**
 - `broadcast_interval_ms` — aggregate rebroadcast cadence (default 1000)
@@ -99,6 +101,17 @@ The core (separately from the installer) writes `/edash_core.dat` every 30 s wit
 ### Re-publishing the installer
 
 The pastebin entry above (`F3bHqTDi`) is the stable entry point. If you fork this repo or want your own, upload your modified [`edi.lua`](edi.lua) to pastebin once via `pastebin put edi.lua` and update the command above with your code.
+
+## Terminal status canvas
+
+Each component's **terminal** (not to be confused with the panel's monitor) shows a live status canvas instead of scrolling log output:
+
+- Title bar with the component name, version, and `network_id`.
+- Status pill (`RUNNING` / `WAITING` / `RESCAN` / `NO MODEM` / `NO MONITOR` / ...).
+- Grouped rows: connected modems, peripheral health with colored bullets, counters (packets in/out, last event timing), latest reading totals.
+- Footer with the most recent event.
+
+Raw log lines still go to the log file (e.g. `/edash_core.log`) — they're just suppressed from the terminal so the canvas isn't clobbered.
 
 ## What the panel shows
 

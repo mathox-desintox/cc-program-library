@@ -52,6 +52,54 @@ function M.clamp(v, lo, hi)
     return v
 end
 
+-- ─── string helpers ────────────────────────────────────────────────────
+
+-- Word-wrap `text` to fit within `width` columns. Returns array of lines.
+-- Words longer than `width` are placed alone on a line (and overflow — we
+-- don't hyphenate). A nil/empty input returns {}.
+function M.wrap(text, width)
+    if not text or text == "" or width < 1 then return {} end
+    local lines, current = {}, ""
+    for word in tostring(text):gmatch("%S+") do
+        if current == "" then
+            current = word
+        elseif #current + 1 + #word <= width then
+            current = current .. " " .. word
+        else
+            lines[#lines + 1] = current
+            current = word
+        end
+    end
+    if current ~= "" then lines[#lines + 1] = current end
+    return lines
+end
+
+-- Truncate `text` to fit in `width` columns, appending `suffix` (default "..")
+-- when it would be cut. Tries to cut at a word boundary if possible.
+function M.truncate(text, width, suffix)
+    text = tostring(text or "")
+    suffix = suffix or ".."
+    if #text <= width then return text end
+    if width <= #suffix then return text:sub(1, width) end
+    local budget = width - #suffix
+    local cut = text:sub(1, budget)
+    -- Prefer a word boundary if one exists in the last quarter of the cut.
+    local ws = cut:find(" [^ ]*$")
+    if ws and ws > math.floor(budget * 0.5) then
+        cut = cut:sub(1, ws - 1)
+    end
+    return cut .. suffix
+end
+
+-- Pad `s` to exactly `w` columns with spaces on the right (default) or left.
+function M.pad(s, w, align)
+    s = tostring(s or "")
+    if #s >= w then return s:sub(1, w) end
+    local gap = w - #s
+    if align == "right" then return string.rep(" ", gap) .. s end
+    return s .. string.rep(" ", gap)
+end
+
 -- ─── ring buffer ───────────────────────────────────────────────────────
 
 -- Fixed-capacity ring that overwrites oldest on push once full.

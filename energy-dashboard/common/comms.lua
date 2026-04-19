@@ -32,28 +32,42 @@ M.ROLE = {
     REMOTE    = "remote",
 }
 
+-- Network ID — a per-world "team" string that isolates independent dashboards
+-- broadcasting on the same ender-modem channel. Every outgoing packet is
+-- stamped with this value; every incoming packet whose id doesn't match is
+-- silently dropped. Each component sets it once at startup from config.
+local _network_id = "default"
+
+function M.set_network_id(id)
+    _network_id = (id ~= nil and tostring(id)) or "default"
+end
+
+function M.get_network_id() return _network_id end
+
 -- Build a packet with the standard envelope.
 function M.packet(kind, role, payload)
     return {
-        version = M.VERSION,
-        kind    = kind,
-        src     = { id = os.getComputerID(), role = role },
-        ts      = os.epoch("utc"),
-        payload = payload or {},
+        version    = M.VERSION,
+        kind       = kind,
+        network_id = _network_id,
+        src        = { id = os.getComputerID(), role = role },
+        ts         = os.epoch("utc"),
+        payload    = payload or {},
     }
 end
 
 -- Returns (true) for valid packets, (false, reason) otherwise.
 -- Callers should drop invalid packets silently.
 function M.valid(msg)
-    if type(msg) ~= "table"                      then return false, "not a table" end
-    if msg.version ~= M.VERSION                  then return false, "version " .. tostring(msg.version) end
-    if type(msg.kind) ~= "string"                then return false, "missing kind" end
-    if type(msg.src) ~= "table"                  then return false, "missing src" end
-    if type(msg.src.id) ~= "number"              then return false, "bad src.id" end
-    if type(msg.src.role) ~= "string"            then return false, "bad src.role" end
-    if type(msg.ts) ~= "number"                  then return false, "missing ts" end
-    if type(msg.payload) ~= "table"              then return false, "missing payload" end
+    if type(msg) ~= "table"           then return false, "not a table" end
+    if msg.version ~= M.VERSION       then return false, "version " .. tostring(msg.version) end
+    if msg.network_id ~= _network_id  then return false, "network_id " .. tostring(msg.network_id) end
+    if type(msg.kind) ~= "string"     then return false, "missing kind" end
+    if type(msg.src) ~= "table"       then return false, "missing src" end
+    if type(msg.src.id) ~= "number"   then return false, "bad src.id" end
+    if type(msg.src.role) ~= "string" then return false, "bad src.role" end
+    if type(msg.ts) ~= "number"       then return false, "missing ts" end
+    if type(msg.payload) ~= "table"   then return false, "missing payload" end
     return true
 end
 

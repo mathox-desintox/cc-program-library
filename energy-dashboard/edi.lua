@@ -67,6 +67,30 @@ local function pad_right(s, w)
     return s .. string.rep(" ", w - #s)
 end
 
+-- Word-wrap text to an array of lines of max width `w`.
+local function wrap(text, w)
+    if not text or text == "" or w < 1 then return {} end
+    local lines, current = {}, ""
+    for word in tostring(text):gmatch("%S+") do
+        if current == "" then current = word
+        elseif #current + 1 + #word <= w then current = current .. " " .. word
+        else lines[#lines + 1] = current; current = word end
+    end
+    if current ~= "" then lines[#lines + 1] = current end
+    return lines
+end
+
+-- Truncate with ".." suffix if text wouldn't fit in `w` columns.
+local function truncate(text, w)
+    text = tostring(text or "")
+    if #text <= w then return text end
+    if w <= 2 then return text:sub(1, w) end
+    local cut = text:sub(1, w - 2)
+    local ws = cut:find(" [^ ]*$")
+    if ws and ws > math.floor((w - 2) * 0.5) then cut = cut:sub(1, ws - 1) end
+    return cut .. ".."
+end
+
 local function write_at(x, y, s, fg, bg)
     term.setCursorPos(x, y)
     if fg then set_fg(fg) end
@@ -157,12 +181,11 @@ local function draw_menu_item(y, it, selected)
     write_at(x, y, it.label or "", fg, bg)
     x = x + #(it.label or "")
 
-    -- description (dim, right-trailing)
+    -- description (dim, right-trailing, word-safe truncation)
     if it.desc and x + 2 < w - 1 then
         local max = w - x - 3
-        local desc = it.desc
-        if #desc > max then desc = desc:sub(1, max - 1) .. "\7" end  -- char 7 = ellipsis-ish
-        write_at(x + 2, y, desc, selected and T.sel_fg or T.dim, bg)
+        write_at(x + 2, y, truncate(it.desc, max),
+                 selected and T.sel_fg or T.dim, bg)
     end
 end
 
@@ -249,7 +272,11 @@ local function fetch_manifest()
     local res = http.get(MANIFEST_URL)
     if not res then
         write_at(26, 4, "FAILED", T.err, T.bg)
-        write_at(2, 6, "Could not reach GitHub. Check http enabled in CC:Tweaked config.", T.err, T.bg)
+        local w = screen_wh()
+        local msg = wrap("Could not reach GitHub. Check the http allow-list in your CC:Tweaked config, and verify the server is online.", w - 4)
+        for i, line in ipairs(msg) do
+            write_at(2, 5 + i, line, T.err, T.bg)
+        end
         return nil
     end
     local body = res.readAll(); res.close()
@@ -319,8 +346,12 @@ local function install_component(manifest, name)
             installed_files[#installed_files + 1] = file.dst
         else
             write_at(status_x, y, "FAILED", T.err, T.bg)
-            fill_line(y + 2, T.bg)
-            write_at(2, y + 2, "error: " .. tostring(sz), T.err, T.bg)
+            local tw = screen_wh()
+            local msg_lines = wrap("error: " .. tostring(sz), tw - 4)
+            for li, line in ipairs(msg_lines) do
+                fill_line(y + 1 + li, T.bg)
+                write_at(2, y + 1 + li, line, T.err, T.bg)
+            end
             draw_footer_bar(" press any key to return to menu")
             os.pullEvent("key")
             return false
@@ -346,14 +377,19 @@ local function install_component(manifest, name)
     }
     save_state(state)
 
-    -- success summary
+    -- success summary — wrap so it fits on narrow terminals
     local summary_y = start_y + 2
-    fill_line(summary_y, T.bg)
-    write_at(2, summary_y, "Installed " .. name .. ". Run with:  ", T.ok, T.bg)
-    write_at(2 + #("Installed " .. name .. ". Run with:  "), summary_y,
-             c.main:gsub("%.lua$", ""), T.fg, T.bg)
-    write_at(2, summary_y + 1, "Reboot or press Enter — first run will launch 'configure'.",
-             T.dim, T.bg)
+    local tw = screen_wh()
+    local run_cmd = c.main:gsub("%.lua$", "")
+    for li, line in ipairs(wrap("Installed " .. name .. ". Run with: " .. run_cmd, tw - 4)) do
+        fill_line(summary_y + li - 1, T.bg)
+        write_at(2, summary_y + li - 1, line, T.ok, T.bg)
+    end
+    local hint_y = summary_y + #wrap("Installed " .. name .. ". Run with: " .. run_cmd, tw - 4)
+    for li, line in ipairs(wrap("Reboot or press Enter — first run will launch 'configure'.", tw - 4)) do
+        fill_line(hint_y + li - 1, T.bg)
+        write_at(2, hint_y + li - 1, line, T.dim, T.bg)
+    end
 
     draw_footer_bar(" press any key to return to menu")
     os.pullEvent("key")

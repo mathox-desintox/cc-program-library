@@ -13,6 +13,9 @@ local comms     = require("common.comms")
 local log       = require("common.log")
 local util      = require("common.util")
 local configlib = require("common.config")
+local status    = require("common.status")
+
+local COMPONENT_VERSION = "0.4.0"
 
 -- First-run wizard: auto-launch `configure` on first boot so intervals,
 -- state-file path, and log-file path can be adjusted before anything
@@ -21,12 +24,19 @@ configlib.run_first_run_wizard("core")
 
 -- ─── config ──────────────────────────────────────────────────────────────
 
-local cfg = configlib.load("core")
+local all_cfg = configlib.load_all()
+local cfg     = all_cfg.core or {}
+local NETWORK_ID            = all_cfg.network_id or "default"
 local BROADCAST_INTERVAL_MS = cfg.broadcast_interval_ms or 1000
 local PERSIST_INTERVAL_MS   = cfg.persist_interval_ms   or 30000
 local STALE_MS              = cfg.stale_ms              or 5000
 local STATE_FILE            = cfg.state_file            or "/edash_core.dat"
 local LOG_FILE              = cfg.log_file              or "/edash_core.log"
+
+-- Stamp our team id onto every outgoing packet; drop any incoming with a
+-- mismatched id. Isolates multiple dashboards broadcasting on the same
+-- ender-modem channel.
+comms.set_network_id(NETWORK_ID)
 
 -- Rollup thresholds. A new 1m sample is pushed when we've had this many
 -- 1s samples; a 5m sample after this many 1m samples.
@@ -296,22 +306,141 @@ local function aggregate(now_ms)
     }
 end
 
+-- ─── status canvas ───────────────────────────────────────────────────────
+
+local ui = {
+    title        = "core",
+    version      = COMPONENT_VERSION,
+    status       = { text = "STARTING", color = colors.cyan },
+    right_header = "net: " .. NETWORK_ID,
+    groups       = {},
+    footer       = "",
+}
+
+local trackers = {
+    modem_sides        = {},
+    packets_received   = 0,
+    packets_dropped    = 0,  -- invalid / wrong network_id
+    aggregates_sent    = 0,
+    last_ingest_ms     = 0,
+    last_broadcast_ms  = 0,
+    last_persist_ms    = 0,
+    last_aggregate     = nil,  -- the last aggregate payload
+    last_event         = "",
+}
+
+local function set_status(text, color) ui.status = { text = text, color = color } end
+local function mark_event(text)        trackers.last_event = text; ui.footer = text end
+
+local function ago(ts_ms)
+    if not ts_ms or ts_ms == 0 then return "never" end
+    return string.format("%.1fs ago", (os.epoch("utc") - ts_ms) / 1000)
+end
+
+local function update_ui()
+    local bullet_ok   = { "\7", colors.lime   }
+    local bullet_wait = { "\7", colors.yellow }
+    local bullet_err  = { "\7", colors.red    }
+
+    -- Network group
+    local net_rows = {
+        { label = "modems",     value = #trackers.modem_sides > 0 and table.concat(trackers.modem_sides, ", ") or "(none)",
+          bullet = (#trackers.modem_sides > 0 and bullet_ok or bullet_err)[1],
+          bullet_color = (#trackers.modem_sides > 0 and bullet_ok or bullet_err)[2] },
+        { label = "network_id", value = NETWORK_ID },
+    }
+
+    -- Collectors group
+    local col_rows = {}
+    local collector_ids = {}
+    for id in pairs(collectors) do collector_ids[#collector_ids + 1] = id end
+    table.sort(collector_ids)
+    if #collector_ids == 0 then
+        col_rows[#col_rows + 1] = { label = "(none yet)", value = "", bullet = bullet_wait[1], bullet_color = bullet_wait[2] }
+    else
+        for _, id in ipairs(collector_ids) do
+            local e = collectors[id]
+            local now = os.epoch("utc")
+            local stale = (e.last_ingest_ms == 0) or (now - e.last_ingest_ms >= STALE_MS)
+            local b = stale and bullet_err or bullet_ok
+            col_rows[#col_rows + 1] = {
+                label = "#" .. tostring(id),
+                value = stale and ("stale  " .. ago(e.last_ingest_ms)) or ago(e.last_ingest_ms),
+                bullet = b[1], bullet_color = b[2],
+            }
+        end
+    end
+
+    -- Stats group
+    local stats_rows = {
+        { label = "pkts in",   value = tostring(trackers.packets_received) },
+        { label = "aggs out",  value = tostring(trackers.aggregates_sent) },
+        { label = "last in",   value = ago(trackers.last_ingest_ms) },
+        { label = "last out",  value = ago(trackers.last_broadcast_ms) },
+        { label = "last save", value = ago(trackers.last_persist_ms) },
+    }
+    if trackers.packets_dropped > 0 then
+        stats_rows[#stats_rows + 1] = { label = "dropped", value = tostring(trackers.packets_dropped), bullet = bullet_wait[1], bullet_color = bullet_wait[2] }
+    end
+
+    -- Totals group (from last aggregate we broadcast)
+    local tot_rows
+    if trackers.last_aggregate then
+        local a = trackers.last_aggregate
+        local fill = (a.network_capacity and a.network_capacity > 0) and (a.network_stored * 100 / a.network_capacity) or 0
+        tot_rows = {
+            { label = "stored",   value = util.fmtFE(a.network_stored)   },
+            { label = "capacity", value = util.fmtFE(a.network_capacity) },
+            { label = "fill",     value = string.format("%.1f%%", fill)  },
+            { label = "cells",    value = tostring(a.network_cells)      },
+        }
+        if a.lifetime then
+            tot_rows[#tot_rows + 1] = { label = "+ lifetime", value = util.fmtFE(a.lifetime.produced_fe) }
+            tot_rows[#tot_rows + 1] = { label = "- lifetime", value = util.fmtFE(a.lifetime.consumed_fe) }
+        end
+    else
+        tot_rows = { { label = "totals", value = "(no data yet)" } }
+    end
+
+    ui.groups = {
+        { title = "network",    rows = net_rows   },
+        { title = "collectors", rows = col_rows   },
+        { title = "stats",      rows = stats_rows },
+        { title = "totals",     rows = tot_rows   },
+    }
+end
+
 local function broadcast_aggregate()
     local payload = aggregate(os.epoch("utc"))
     local pkt = comms.packet(comms.KIND.CORE_AGGREGATE, comms.ROLE.CORE, payload)
     rednet.broadcast(pkt, comms.PROTO_DATA)
+    trackers.aggregates_sent    = trackers.aggregates_sent + 1
+    trackers.last_broadcast_ms  = os.epoch("utc")
+    trackers.last_aggregate     = payload
 end
 
 -- ─── main ────────────────────────────────────────────────────────────────
 
 log.init("core", log.LEVEL.INFO, LOG_FILE)
-log.info("starting")
+log.silence_terminal(true)
+log.info("core " .. COMPONENT_VERSION .. " starting")
 
-local sides = comms.open_all_modems()
-if #sides == 0 then log.error("no modem found") error("attach a modem", 0) end
-log.info("opened modems on: " .. table.concat(sides, ", "))
+trackers.modem_sides = comms.open_all_modems()
+if #trackers.modem_sides == 0 then
+    log.error("no modem found")
+    set_status("NO MODEM", colors.red)
+    mark_event("no modem attached")
+    update_ui()
+    status.render(term, ui)
+    sleep(5)
+    error("no modem attached", 0)
+end
+log.info("opened modems on: " .. table.concat(trackers.modem_sides, ", "))
+mark_event("modems opened on " .. table.concat(trackers.modem_sides, ", "))
 
 load_state()
+set_status("RUNNING", colors.lime)
+update_ui()
 
 parallel.waitForAny(
     -- Ingest loop: listen for collector state packets.
@@ -322,7 +451,10 @@ parallel.waitForAny(
                 local ok, reason = comms.valid(msg)
                 if ok and msg.kind == comms.KIND.COLLECTOR_STATE and msg.src.role == comms.ROLE.COLLECTOR then
                     ingest(msg)
+                    trackers.packets_received = trackers.packets_received + 1
+                    trackers.last_ingest_ms   = os.epoch("utc")
                 elseif not ok then
+                    trackers.packets_dropped = trackers.packets_dropped + 1
                     log.debug("dropping invalid packet: " .. tostring(reason))
                 end
             end
@@ -333,7 +465,10 @@ parallel.waitForAny(
     function()
         while true do
             local ok, err = pcall(broadcast_aggregate)
-            if not ok then log.warn("broadcast failed: " .. tostring(err)) end
+            if not ok then
+                log.warn("broadcast failed: " .. tostring(err))
+                mark_event("broadcast failed: " .. tostring(err))
+            end
             sleep(BROADCAST_INTERVAL_MS / 1000)
         end
     end,
@@ -343,7 +478,21 @@ parallel.waitForAny(
         while true do
             sleep(PERSIST_INTERVAL_MS / 1000)
             local ok, err = pcall(save_state)
-            if not ok then log.warn("persist failed: " .. tostring(err)) end
+            if ok then
+                trackers.last_persist_ms = os.epoch("utc")
+            else
+                log.warn("persist failed: " .. tostring(err))
+                mark_event("persist failed: " .. tostring(err))
+            end
+        end
+    end,
+
+    -- Status render loop.
+    function()
+        while true do
+            update_ui()
+            pcall(status.render, term, ui)
+            sleep(0.5)
         end
     end
 )

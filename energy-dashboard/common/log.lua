@@ -20,6 +20,7 @@ local COLOR = {
 local _component = "?"
 local _threshold = M.LEVEL.INFO
 local _file      = nil
+local _silent    = false   -- when true, only file output; terminal untouched
 
 function M.init(component, threshold, file)
     _component = component or "?"
@@ -27,16 +28,23 @@ function M.init(component, threshold, file)
     _file      = file
 end
 
+-- Enable this when a status canvas owns the terminal. Log still writes to
+-- the file (if configured) so you get a full trace — the terminal just
+-- isn't clobbered by stray prints.
+function M.silence_terminal(b) _silent = b and true or false end
+
 local function emit(level, msg)
     if level < _threshold then return end
     local ts = textutils.formatTime(os.time(), true)
     local line = string.format("[%s] %s %s: %s", ts, NAME[level], _component, tostring(msg))
 
-    -- terminal (coloured)
-    local prev_fg = term.getTextColor and term.getTextColor() or colors.white
-    if term.setTextColor then term.setTextColor(COLOR[level] or colors.white) end
-    print(line)
-    if term.setTextColor then term.setTextColor(prev_fg) end
+    -- terminal (coloured) — suppressed when a status canvas owns the terminal
+    if not _silent then
+        local prev_fg = term.getTextColor and term.getTextColor() or colors.white
+        if term.setTextColor then term.setTextColor(COLOR[level] or colors.white) end
+        print(line)
+        if term.setTextColor then term.setTextColor(prev_fg) end
+    end
 
     -- file
     if _file then

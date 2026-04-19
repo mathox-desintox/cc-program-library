@@ -1,6 +1,6 @@
 {
     "schema": 1,
-    "version": "0.3.0",
+    "version": "0.4.0",
     "repo": "https://raw.githubusercontent.com/mathox-desintox/cc-program-library/main/energy-dashboard",
     "components": {
         "collector": {
@@ -17,6 +17,7 @@
                 { "src": "common/ppm.lua",          "dst": "common/ppm.lua" },
                 { "src": "common/util.lua",         "dst": "common/util.lua" },
                 { "src": "common/config.lua",       "dst": "common/config.lua" },
+                { "src": "common/status.lua",       "dst": "common/status.lua" },
                 { "src": "configure.lua",           "dst": "configure.lua" },
                 { "src": "collector/collector.lua", "dst": "collector.lua" }
             ]
@@ -33,6 +34,7 @@
                 { "src": "common/log.lua",    "dst": "common/log.lua" },
                 { "src": "common/util.lua",   "dst": "common/util.lua" },
                 { "src": "common/config.lua", "dst": "common/config.lua" },
+                { "src": "common/status.lua", "dst": "common/status.lua" },
                 { "src": "configure.lua",     "dst": "configure.lua" },
                 { "src": "core/core.lua",     "dst": "core.lua" }
             ]
@@ -51,6 +53,7 @@
                 { "src": "common/ppm.lua",      "dst": "common/ppm.lua" },
                 { "src": "common/util.lua",     "dst": "common/util.lua" },
                 { "src": "common/config.lua",   "dst": "common/config.lua" },
+                { "src": "common/status.lua",   "dst": "common/status.lua" },
                 { "src": "configure.lua",       "dst": "configure.lua" },
                 { "src": "graphics/core.lua",   "dst": "graphics/core.lua" },
                 { "src": "graphics/themes.lua", "dst": "graphics/themes.lua" },
