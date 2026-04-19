@@ -32,43 +32,43 @@ Packet envelope: `{ version, kind, src = {id, role}, ts, payload }`. Version mis
 
 ## Install
 
-Every computer expects files under the `common/` + (module-specific) folder in its filesystem. Fetch with `wget` from the raw GitHub URLs. An installer (`edi`) is M3 — for now the manual wget list.
+All three components install via **`edi`** (Energy Dashboard Installer). It fetches `build/manifest.json` from GitHub and downloads just the files each component needs into the right paths. State is tracked in `/.edi_state` so `update` and `uninstall` know what was installed.
 
-### Collector computer — next to a flux accessor
+### One-time: publish the installer to pastebin
 
-```
-wget https://raw.githubusercontent.com/mathox-desintox/cc-program-library/main/energy-dashboard/common/comms.lua common/comms.lua
-wget https://raw.githubusercontent.com/mathox-desintox/cc-program-library/main/energy-dashboard/common/log.lua common/log.lua
-wget https://raw.githubusercontent.com/mathox-desintox/cc-program-library/main/energy-dashboard/common/ppm.lua common/ppm.lua
-wget https://raw.githubusercontent.com/mathox-desintox/cc-program-library/main/energy-dashboard/common/util.lua common/util.lua
-wget https://raw.githubusercontent.com/mathox-desintox/cc-program-library/main/energy-dashboard/collector/collector.lua collector.lua
-collector
-```
-
-### Core computer — anywhere with modem range
+Upload `edi.lua` to pastebin once. Any account works:
 
 ```
-wget https://raw.githubusercontent.com/mathox-desintox/cc-program-library/main/energy-dashboard/common/comms.lua common/comms.lua
-wget https://raw.githubusercontent.com/mathox-desintox/cc-program-library/main/energy-dashboard/common/log.lua common/log.lua
-wget https://raw.githubusercontent.com/mathox-desintox/cc-program-library/main/energy-dashboard/common/util.lua common/util.lua
-wget https://raw.githubusercontent.com/mathox-desintox/cc-program-library/main/energy-dashboard/core/core.lua core.lua
-core
+pastebin put edi.lua        # prints a code, e.g. "ABC12345"
 ```
 
-The core writes `/edash_core.dat` every 30 s with lifetime produced/consumed totals and uptime. Safe to delete if you want to reset counters.
+Note that code — that's your stable entry point from any new computer.
 
-### Panel computer — adjacent to an advanced monitor
+> Until the user publishes a code here, the placeholder below is `<EDI-CODE>`.
+
+### On each computer
 
 ```
-wget https://raw.githubusercontent.com/mathox-desintox/cc-program-library/main/energy-dashboard/common/comms.lua common/comms.lua
-wget https://raw.githubusercontent.com/mathox-desintox/cc-program-library/main/energy-dashboard/common/log.lua common/log.lua
-wget https://raw.githubusercontent.com/mathox-desintox/cc-program-library/main/energy-dashboard/common/ppm.lua common/ppm.lua
-wget https://raw.githubusercontent.com/mathox-desintox/cc-program-library/main/energy-dashboard/common/util.lua common/util.lua
-wget https://raw.githubusercontent.com/mathox-desintox/cc-program-library/main/energy-dashboard/graphics/core.lua graphics/core.lua
-wget https://raw.githubusercontent.com/mathox-desintox/cc-program-library/main/energy-dashboard/graphics/themes.lua graphics/themes.lua
-wget https://raw.githubusercontent.com/mathox-desintox/cc-program-library/main/energy-dashboard/panel/panel.lua panel.lua
-panel
+pastebin run <EDI-CODE>
 ```
+
+Navigate the arrow-key menu, pick a component:
+
+- `[install]   collector`  — for the computer next to a flux accessor
+- `[install]   core`       — for the middle-tier aggregator (any computer)
+- `[install]   panel`      — for the computer with the monitor
+- `[update]    all installed` — re-fetch every installed component after you change the repo
+- `[uninstall] ...`        — list + remove any component's files
+
+After install you're shown the command to run (e.g. `collector`). On subsequent runs, just re-run `pastebin run <EDI-CODE>` → `[update]    all installed` to pull the latest.
+
+### State file
+
+The installer writes `/.edi_state` with a list of installed components, their versions, and every file they placed. Safe to delete if you want a clean slate (you'll lose the "update" and "uninstall" shortcuts but won't break running programs).
+
+### Core's data file
+
+The core (separately from the installer) writes `/edash_core.dat` every 30 s with lifetime produced/consumed totals and uptime. Safe to delete to reset counters — histories are kept only in RAM anyway.
 
 ## What the panel shows
 
@@ -101,7 +101,6 @@ Rate defaults to **per-tick** (`/t`) — Minecraft's native time unit. Toggle to
 
 ## What's intentionally missing (coming in later milestones)
 
-- **M3**: `edi` installer replacing the wget lists.
 - **M4**: `configure.lua` per-component — peripheral autodetect + role assignment.
 - **M5**: Enhanced main display — clickable horizon-switcher on a rate graph, volatility, watermarks.
 - **M6**: Drive display — per-cell heatmap.

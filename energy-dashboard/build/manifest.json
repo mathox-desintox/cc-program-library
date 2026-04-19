@@ -1,0 +1,55 @@
+{
+    "schema": 1,
+    "version": "0.2.0",
+    "repo": "https://raw.githubusercontent.com/mathox-desintox/cc-program-library/main/energy-dashboard",
+    "components": {
+        "collector": {
+            "description": "RTU: wraps a flux_accessor_ext, broadcasts state every second",
+            "main": "collector.lua",
+            "needs": [
+                "advanced computer",
+                "ender/wireless modem",
+                "flux accessor adjacent (or on wired-modem network)"
+            ],
+            "files": [
+                { "src": "common/comms.lua",        "dst": "common/comms.lua" },
+                { "src": "common/log.lua",          "dst": "common/log.lua" },
+                { "src": "common/ppm.lua",          "dst": "common/ppm.lua" },
+                { "src": "common/util.lua",         "dst": "common/util.lua" },
+                { "src": "collector/collector.lua", "dst": "collector.lua" }
+            ]
+        },
+        "core": {
+            "description": "Aggregator: tiered history, rates, lifetime counters, disk persist",
+            "main": "core.lua",
+            "needs": [
+                "advanced computer",
+                "ender/wireless modem"
+            ],
+            "files": [
+                { "src": "common/comms.lua", "dst": "common/comms.lua" },
+                { "src": "common/log.lua",   "dst": "common/log.lua" },
+                { "src": "common/util.lua",  "dst": "common/util.lua" },
+                { "src": "core/core.lua",    "dst": "core.lua" }
+            ]
+        },
+        "panel": {
+            "description": "HMI: renders aggregate on an advanced monitor",
+            "main": "panel.lua",
+            "needs": [
+                "advanced computer",
+                "advanced monitor",
+                "ender/wireless modem"
+            ],
+            "files": [
+                { "src": "common/comms.lua",    "dst": "common/comms.lua" },
+                { "src": "common/log.lua",      "dst": "common/log.lua" },
+                { "src": "common/ppm.lua",      "dst": "common/ppm.lua" },
+                { "src": "common/util.lua",     "dst": "common/util.lua" },
+                { "src": "graphics/core.lua",   "dst": "graphics/core.lua" },
+                { "src": "graphics/themes.lua", "dst": "graphics/themes.lua" },
+                { "src": "panel/panel.lua",     "dst": "panel.lua" }
+            ]
+        }
+    }
+}
