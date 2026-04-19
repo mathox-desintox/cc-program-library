@@ -177,12 +177,12 @@ local function draw_menu_item(y, it, selected)
         write_at(2, y, "\16", T.sel_fg, T.sel_bg)   -- char 16 = ► in CC charset
     end
 
-    -- Budget the row: 1 col cursor gutter + tag + label + (gap + desc) → w-1
+    -- Rows are label + tag only; the selected item's full description
+    -- renders in the detail panel at the bottom of the screen (word-
+    -- wrapped, multi-line). This avoids the inline-truncation problem.
     local x = 4
     local right_edge = w - 1
-    local desc_present = it.desc and it.desc ~= ""
 
-    -- tag with semantic colour (but respect selection)
     if it.tag then
         local tag_fg = selected and T.sel_fg or (it.tag_color or T.fg)
         local tag = truncate(it.tag, math.max(0, right_edge - x))
@@ -190,24 +190,23 @@ local function draw_menu_item(y, it, selected)
         x = x + #tag
     end
 
-    -- Label. If a description exists, reserve the last ~third of the row
-    -- for it (with a 2-col gap) so the label doesn't eat the whole line.
     local label = tostring(it.label or "")
-    local label_budget
-    if desc_present then
-        label_budget = math.max(4, math.floor((right_edge - x) * 0.55))
-    else
-        label_budget = right_edge - x
-    end
-    label = truncate(label, label_budget)
+    label = truncate(label, math.max(0, right_edge - x))
     write_at(x, y, label, fg, bg)
-    x = x + #label
+end
 
-    -- description (dim, right-trailing, word-safe truncation)
-    if desc_present and x + 2 < right_edge then
-        local max = right_edge - x - 2
-        write_at(x + 2, y, truncate(it.desc, max),
-                 selected and T.sel_fg or T.dim, bg)
+-- Detail panel: shows the currently selected item's full description word-
+-- wrapped across the reserved bottom rows. Called by arrow_menu after the
+-- list is drawn. Takes the y of the divider row + the height of the panel.
+local function draw_detail_panel(divider_y, height, text)
+    local w = screen_wh()
+    draw_section(divider_y, "detail")
+    local lines = wrap(text or "", w - 3)
+    for i = 1, height - 1 do
+        fill_line(divider_y + i, T.bg)
+        if lines[i] then
+            write_at(2, divider_y + i, lines[i], T.dim, T.bg)
+        end
     end
 end
 
@@ -228,15 +227,24 @@ local function arrow_menu(items, title, right_text, footer_text)
     while true do
         clear_screen()
         draw_title_bar(title or "Energy Dashboard Installer", right_text)
-        -- spacer row
         fill_line(2, T.bg)
 
         local _, h = screen_wh()
         local start_y = 3
-        local max_rows = h - start_y - 1   -- leave room for footer
 
-        -- simple viewport: show items from 1 and trust that we fit for now.
-        -- If the list grows long we can add scrolling later.
+        -- Reserve the bottom of the screen for a detail panel showing the
+        -- selected item's description (divider row + 3 wrap lines = 4 rows)
+        -- plus the footer. Falls back to list-only on very short terminals.
+        local detail_height = 4    -- includes the "-- detail ---" divider row
+        local footer_reserve = 1
+        local list_reserve = detail_height + footer_reserve
+        local max_rows = math.max(1, h - start_y - list_reserve)
+        if h - start_y - footer_reserve < detail_height + 3 then
+            -- too short for a detail panel; give the list all the space
+            detail_height = 0
+            max_rows = math.max(1, h - start_y - footer_reserve)
+        end
+
         local offset = 0
         if #items > max_rows then offset = math.min(sel - 1, #items - max_rows) end
 
@@ -244,6 +252,12 @@ local function arrow_menu(items, title, right_text, footer_text)
             local idx = i + offset
             local it = items[idx]
             if it then draw_menu_item(start_y + i - 1, it, idx == sel) end
+        end
+
+        -- Detail panel shows the selected item's full desc, word-wrapped.
+        if detail_height > 0 then
+            local current = items[sel] or {}
+            draw_detail_panel(h - footer_reserve - detail_height + 1, detail_height, current.desc or "")
         end
 
         draw_footer_bar(footer_text or " \24\25  navigate     enter select     q  quit")
@@ -484,6 +498,162 @@ local function update_all(manifest)
     for _, n in ipairs(names) do install_component(manifest, n) end
 end
 
+-- --- cleanup (purge everything) -----------------------------------------
+
+-- Runtime files edash components create that aren't tracked in /.edi_state.
+-- Listed explicitly so the cleanup is exhaustive + predictable.
+local AUX_FILES = {
+    STATE_FILE,                    -- /.edi_state
+    STARTUP_FILE,                  -- /startup.lua
+    "/.edash_first_run_done",
+    "/edash_config.lua",
+    "/edash_core.dat",
+    "/edash_core.log",
+    "/edash_collector.log",
+    "/edash_panel.log",
+}
+-- Directories we remove if empty after file deletion. Never recursive-delete
+-- these — we only prune empty leftovers from edi installs.
+local AUX_DIRS = { "/common", "/graphics" }
+
+-- Gather the full cleanup set: (component_files, aux_files, dirs_to_try).
+-- Only returns paths that currently exist.
+local function gather_cleanup()
+    local state = load_state()
+    local installed_files = {}
+    local seen = {}
+    for _, rec in pairs(state.installed) do
+        for _, path in ipairs(rec.files or {}) do
+            if not seen[path] and fs.exists(path) then
+                seen[path] = true
+                installed_files[#installed_files + 1] = path
+            end
+        end
+    end
+    local aux_existing = {}
+    for _, p in ipairs(AUX_FILES) do
+        if fs.exists(p) and not seen[p] then aux_existing[#aux_existing + 1] = p end
+    end
+    local dirs_existing = {}
+    for _, d in ipairs(AUX_DIRS) do
+        if fs.exists(d) and fs.isDir(d) then dirs_existing[#dirs_existing + 1] = d end
+    end
+    return installed_files, aux_existing, dirs_existing
+end
+
+local function dir_is_empty(path)
+    local list = fs.list(path)
+    return not list or #list == 0
+end
+
+-- Show the confirm screen. Returns true if the user typed 'y'.
+local function confirm_cleanup(installed_files, aux_files, dirs)
+    clear_screen()
+    draw_title_bar("Cleanup", "DESTRUCTIVE")
+    fill_line(2, T.bg)
+
+    local w, h = term.getSize()
+    local y = 3
+    draw_section(y, "about to delete"); y = y + 1
+
+    local total = #installed_files + #aux_files
+    if total == 0 and #dirs == 0 then
+        fill_line(y + 1, T.bg)
+        write_at(2, y + 1, "nothing to clean up on this computer.", T.dim, T.bg)
+        draw_footer_bar(" press any key")
+        os.pullEvent("key")
+        return false
+    end
+
+    for i, line in ipairs(wrap(
+        string.format("%d installed component file(s)   %d state/log file(s)   %d dir(s) (if empty)",
+            #installed_files, #aux_files, #dirs), w - 3)) do
+        write_at(2, y + i, line, T.fg, T.bg)
+    end
+    y = y + 3
+
+    -- Abbreviated preview list; the full list can overflow any terminal so
+    -- we just show up to a handful.
+    local preview = {}
+    for _, p in ipairs(installed_files) do preview[#preview + 1] = p end
+    for _, p in ipairs(aux_files)       do preview[#preview + 1] = p end
+    local shown = 0
+    for _, p in ipairs(preview) do
+        if y >= h - 6 then break end
+        write_at(2, y, "  " .. p, T.dim, T.bg); y = y + 1
+        shown = shown + 1
+    end
+    if #preview > shown then
+        write_at(2, y, "  ... and " .. (#preview - shown) .. " more", T.dim, T.bg); y = y + 1
+    end
+
+    -- red banner at the bottom
+    fill_line(h - 2, T.bg)
+    write_at(2, h - 2, "This is permanent. Installed components will be removed,",
+        T.err, T.bg)
+    fill_line(h - 1, T.bg)
+    write_at(2, h - 1, "state + logs wiped, startup hook deleted.",
+        T.err, T.bg)
+
+    draw_footer_bar(" y confirm delete    any other key cancel")
+
+    local _, char = os.pullEvent("char")
+    return char == "y" or char == "Y"
+end
+
+-- Perform the deletion. Returns (n_deleted, n_errors).
+local function perform_cleanup(installed_files, aux_files, dirs)
+    clear_screen()
+    draw_title_bar("Cleanup")
+    fill_line(2, T.bg)
+    draw_section(3, "deleting")
+
+    local w, h = term.getSize()
+    local y = 4
+    local deleted, errors = 0, 0
+
+    local function delete_one(path)
+        local visible = y < h - 2
+        if visible then
+            fill_line(y, T.bg)
+            write_at(2, y, truncate("  " .. path, w - 10), T.dim, T.bg)
+        end
+        local ok = pcall(fs.delete, path)
+        if ok and not fs.exists(path) then
+            if visible then write_at(w - 8, y, "OK", T.ok, T.bg) end
+            deleted = deleted + 1
+        else
+            if visible then write_at(w - 8, y, "FAILED", T.err, T.bg) end
+            errors = errors + 1
+        end
+        y = y + 1
+    end
+
+    for _, p in ipairs(installed_files) do delete_one(p) end
+    for _, p in ipairs(aux_files)       do delete_one(p) end
+    for _, d in ipairs(dirs) do
+        if fs.exists(d) and fs.isDir(d) and dir_is_empty(d) then delete_one(d) end
+    end
+
+    -- summary
+    fill_line(h - 2, T.bg)
+    write_at(2, h - 2,
+        string.format("cleanup done.  deleted: %d   errors: %d", deleted, errors),
+        errors == 0 and T.ok or T.warn, T.bg)
+    draw_footer_bar(" press any key")
+    os.pullEvent("key")
+    return deleted, errors
+end
+
+local function cleanup_all()
+    local installed_files, aux_files, dirs = gather_cleanup()
+    if not confirm_cleanup(installed_files, aux_files, dirs) then
+        return false
+    end
+    perform_cleanup(installed_files, aux_files, dirs)
+    return true
+end
+
 -- --- menu builders ------------------------------------------------------
 
 local function tag_for_install(installed)
@@ -526,6 +696,12 @@ local function build_main_menu(manifest)
         label = pad_right("...", 14),
         desc  = "remove an installed component",
         action = "uninstall_menu",
+    }
+    items[#items + 1] = {
+        tag = "[cleanup]   ", tag_color = T.uninstall,
+        label = pad_right("everything", 14),
+        desc  = "DESTRUCTIVE: delete every installed component file, configure + first-run state, logs, and /startup.lua. Confirmation required.",
+        action = "cleanup",
     }
     items[#items + 1] = {
         tag = "[exit]      ", tag_color = T.exit,
@@ -602,6 +778,8 @@ local function main()
                 if not sub or sub.action == "back" then break end
                 if sub.action == "uninstall" then uninstall_component(sub.component) end
             end
+        elseif choice.action == "cleanup" then
+            cleanup_all()
         end
     end
 end
