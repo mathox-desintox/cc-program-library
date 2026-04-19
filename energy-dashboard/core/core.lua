@@ -15,7 +15,7 @@ local util      = require("common.util")
 local configlib = require("common.config")
 local status    = require("common.status")
 
-local COMPONENT_VERSION = "0.7.0"
+local COMPONENT_VERSION = "0.7.1"
 
 -- First-run wizard: auto-launch `configure` on first boot so intervals,
 -- state-file path, and log-file path can be adjusted before anything
@@ -354,7 +354,7 @@ end
 -- Merge all collectors into one network-wide snapshot. Extend this when we
 -- want multi-network support (group by payload.networkId).
 local function aggregate(now_ms)
-    local stored, capacity, cells = 0, 0, 0
+    local stored, stored_avg, capacity, cells = 0, 0, 0, 0
     local online, any_collector = true, false
     local stale = true
     local per_collector = {}
@@ -366,6 +366,14 @@ local function aggregate(now_ms)
             any_collector = true
             local p = entry.last_msg.payload
             stored   = stored + (p.stored or 0)
+            -- The per-collector history_1s ring stores each batch as ONE
+            -- averaged entry (mean of the per-tick samples). Summing those
+            -- gives a smoothed network_stored that we use to feed the
+            -- rate/chart rings. The single-tick `stored` above is kept
+            -- for the "Stored" line on the panel so the user still sees
+            -- the snappy current value.
+            local latest_avg = entry.history_1s:at(1)
+            stored_avg = stored_avg + ((latest_avg and latest_avg.stored) or p.stored or 0)
             capacity = capacity + (p.capacity or 0)
             cells    = cells + (p.cellCount or 0)
             if not p.online then online = false end
@@ -394,15 +402,16 @@ local function aggregate(now_ms)
     end
 
     return {
-        network_stored   = stored,
-        network_capacity = capacity,
-        network_cells    = cells,
-        network_online   = online and any_collector,
-        network_stale    = (not any_collector) or stale,
-        rates            = rates,
-        eta_to_full_s    = eta_to_full,
-        eta_to_empty_s   = eta_to_empty,
-        per_collector    = per_collector,
+        network_stored     = stored,
+        network_stored_avg = stored_avg,
+        network_capacity   = capacity,
+        network_cells      = cells,
+        network_online     = online and any_collector,
+        network_stale      = (not any_collector) or stale,
+        rates              = rates,
+        eta_to_full_s      = eta_to_full,
+        eta_to_empty_s     = eta_to_empty,
+        per_collector      = per_collector,
         lifetime = {
             produced_fe       = lifetime.produced_fe,
             consumed_fe       = lifetime.consumed_fe,
@@ -531,7 +540,10 @@ local function broadcast_aggregate()
     -- Snapshot the network totals into rollup rings, then attach tiered
     -- series to the outgoing packet so panels can render charts without
     -- duplicating the history themselves.
-    push_network_sample(payload.network_stored or 0, now_ms)
+    -- Feed the smoothed (batch-averaged) stored into the chart rings;
+    -- the snappy single-tick `network_stored` stays on the panel's
+    -- "Stored" readout.
+    push_network_sample(payload.network_stored_avg or payload.network_stored or 0, now_ms)
     payload.history = {
         s1 = serialize_ring(net_history_s1,             1000, false),
         m1 = serialize_ring(net_history_m1,        60 * 1000, false),

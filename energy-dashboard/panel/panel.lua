@@ -16,7 +16,7 @@ local themes    = require("graphics.themes")
 local configlib = require("common.config")
 local status    = require("common.status")
 
-local COMPONENT_VERSION = "0.7.0"
+local COMPONENT_VERSION = "0.7.1"
 
 -- First-run wizard: auto-launch `configure` on first boot so the user
 -- picks which monitor + rate unit they want before we start drawing.
@@ -290,7 +290,9 @@ local function render(mon)
         -- Partial window: chart's left side is blank until enough buckets
         -- fill in. Flag the calculated values as tentative and show the
         -- progress count in the ETA slot.
-        local notice = string.format("building %s window: %d / %d", hz.label, have, need)
+        local notice = string.format(
+            "peak/vol stats: %d/%d buckets filled (wait for full %s)",
+            have, need, hz.label)
         gfx.write(mon, 2, row, notice, P.warn)
     end
 
