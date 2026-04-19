@@ -9,16 +9,24 @@
 -- Run on any advanced computer with an ender modem. One core per
 -- deployment; multiple collectors may feed it.
 
-local comms = require("common.comms")
-local log   = require("common.log")
-local util  = require("common.util")
+local comms     = require("common.comms")
+local log       = require("common.log")
+local util      = require("common.util")
+local configlib = require("common.config")
+
+-- First-run wizard: auto-launch `configure` on first boot so intervals,
+-- state-file path, and log-file path can be adjusted before anything
+-- is written to disk.
+configlib.run_first_run_wizard("core")
 
 -- ─── config ──────────────────────────────────────────────────────────────
 
-local BROADCAST_INTERVAL_MS = 1000   -- how often we publish aggregate
-local PERSIST_INTERVAL_MS   = 30000  -- disk save cadence
-local STALE_MS              = 5000   -- mark a collector stale after this
-local STATE_FILE            = "/edash_core.dat"
+local cfg = configlib.load("core")
+local BROADCAST_INTERVAL_MS = cfg.broadcast_interval_ms or 1000
+local PERSIST_INTERVAL_MS   = cfg.persist_interval_ms   or 30000
+local STALE_MS              = cfg.stale_ms              or 5000
+local STATE_FILE            = cfg.state_file            or "/edash_core.dat"
+local LOG_FILE              = cfg.log_file              or "/edash_core.log"
 
 -- Rollup thresholds. A new 1m sample is pushed when we've had this many
 -- 1s samples; a 5m sample after this many 1m samples.
@@ -296,7 +304,7 @@ end
 
 -- ─── main ────────────────────────────────────────────────────────────────
 
-log.init("core", log.LEVEL.INFO, "/edash_core.log")
+log.init("core", log.LEVEL.INFO, LOG_FILE)
 log.info("starting")
 
 local sides = comms.open_all_modems()

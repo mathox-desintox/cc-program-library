@@ -46,11 +46,51 @@ Menu actions:
 - `[update]    all installed` — re-fetch every installed component (run this after repo changes)
 - `[uninstall] ...`        — list + remove any component's files
 
-After install you're shown the command to run (e.g. `collector`). To update later, just re-run `pastebin run F3bHqTDi` → `[update]    all installed`.
+After install the component auto-runs on every boot — `edi` writes a `/startup.lua` that launches whichever component is installed on this computer. The very first time it runs, the component prints *"first run detected"* and auto-launches `configure` so you can pick your peripheral / rate unit / whatever before anything broadcasts. After configure exits (save or discard), a sentinel at `/.edash_first_run_done` prevents the prompt from recurring.
 
-### State file
+To update later, just re-run `pastebin run F3bHqTDi` → `[update]    all installed`.
 
-The installer writes `/.edi_state` with the list of installed components, their versions, and every file they placed. Safe to delete if you want a clean slate — it won't break running programs, you'll just lose the `update` / `uninstall` shortcuts for that computer.
+## Configure
+
+Every component reads `/edash_config.lua` at startup. If the file is missing or a key is unset, sensible defaults are used — so you can skip this step entirely and everything still works. Run `configure` to change anything:
+
+```
+configure
+```
+
+Arrow-key menu; it auto-detects which components are installed on this computer (by reading `/.edi_state`) and shows only those. Inside each component you can:
+
+**collector**
+- `peripheral` — pick the `flux_accessor_ext` to use (autodetect lists attached accessors)
+- `tick_seconds` — broadcast cadence (default 1)
+- `network_id` — reserved for future multi-network deployments
+
+**core**
+- `broadcast_interval_ms` — aggregate rebroadcast cadence (default 1000)
+- `persist_interval_ms` — disk-save cadence (default 30000)
+- `stale_ms` — when to flag a collector as stale (default 5000)
+- `state_file` / `log_file` — paths (rarely need changing)
+
+**panel**
+- `monitor` — pick which monitor to use (autodetect lists attached monitors)
+- `rate_unit` — `t` (per Minecraft tick, default) or `s` (per real-time second)
+- `redraw_ms` — screen refresh cadence
+- `stale_ms` / `theme` — as above
+
+Saving writes `/edash_config.lua` (human-readable Lua — you can hand-edit it if you prefer). **Restart the component** to pick up new values.
+
+### State files
+
+The installer writes a few small marker files:
+
+| File | Owner | Purpose |
+|---|---|---|
+| `/.edi_state` | `edi` | list of installed components + file paths, for update/uninstall |
+| `/startup.lua` | `edi` | boot autorun — launches the first component present on disk |
+| `/.edash_first_run_done` | components | first-run wizard sentinel — prevents re-prompting `configure` |
+| `/edash_config.lua` | `configure` | human-readable settings |
+
+All safe to delete for a clean slate. Deleting `/.edash_first_run_done` re-arms the first-run prompt. Deleting `/startup.lua` disables autorun (the component still works if you run it manually).
 
 ### Core's data file
 
@@ -77,7 +117,7 @@ The pastebin entry above (`F3bHqTDi`) is the stable entry point. If you fork thi
 | **Footer line 1** | cell count, collector count, uptime. |
 | **Footer line 2** | lifetime produced / consumed (cumulative across restarts). |
 
-Rate defaults to **per-tick** (`/t`) — Minecraft's native time unit. Toggle to `/s` via the `RATE_UNIT` constant at the top of `panel.lua` (will be configurable in M4).
+Rate defaults to **per-tick** (`/t`) — Minecraft's native time unit. Toggle to `/s` via `configure` (panel → rate_unit) or by editing `/edash_config.lua` directly.
 
 ## Troubleshooting
 
@@ -91,7 +131,6 @@ Rate defaults to **per-tick** (`/t`) — Minecraft's native time unit. Toggle to
 
 ## What's intentionally missing (coming in later milestones)
 
-- **M4**: `configure.lua` per-component — peripheral autodetect + role assignment.
 - **M5**: Enhanced main display — clickable horizon-switcher on a rate graph, volatility, watermarks.
 - **M6**: Drive display — per-cell heatmap.
 - **M7**: Lifetime display — production/consumption projections.

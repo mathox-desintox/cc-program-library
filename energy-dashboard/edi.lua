@@ -5,49 +5,226 @@
 -- Upload this single file to pastebin, then in-game:
 --   pastebin run <CODE>
 --
--- It fetches the manifest from GitHub and lets you install / update /
--- uninstall dashboard components (collector, core, panel) with arrow-key
--- navigation. No wget lists.
+-- Installs one of the dashboard components (collector / core / panel)
+-- driven by build/manifest.json on GitHub. After a successful install
+-- it writes /startup.lua so the component auto-runs on every boot; the
+-- component itself launches `configure` on first run if no config
+-- file exists yet (scada-mek-style first-run wizard).
 --
--- State lives in /.edi_state (plain Lua-serialised table) so "update" and
--- "uninstall" know what was previously installed.
+-- State lives in /.edi_state (plain Lua-serialised table) so update and
+-- uninstall know what was previously installed on this computer.
 
--- Edit if you fork: point at your own manifest.
 local MANIFEST_URL = "https://raw.githubusercontent.com/mathox-desintox/cc-program-library/main/energy-dashboard/build/manifest.json"
 local STATE_FILE   = "/.edi_state"
+local STARTUP_FILE = "/startup.lua"
 
--- ─── terminal helpers (degrade on non-colour terms) ─────────────────────
+-- ─── theme ──────────────────────────────────────────────────────────────
 
 local has_color = term.isColor and term.isColor()
+local T = {
+    bg            = colors.black,
+    fg            = colors.white,
+    dim           = colors.lightGray,
+
+    title_bg      = colors.blue,
+    title_fg      = colors.white,
+
+    section       = colors.cyan,
+    footer_bg     = colors.gray,
+    footer_fg     = colors.white,
+
+    sel_bg        = colors.white,
+    sel_fg        = colors.black,
+
+    install       = colors.lime,
+    reinstall     = colors.yellow,
+    update        = colors.cyan,
+    uninstall     = colors.red,
+    back          = colors.lightGray,
+    exit          = colors.lightGray,
+
+    ok            = colors.lime,
+    warn          = colors.yellow,
+    err           = colors.red,
+}
+
 local function set_fg(c) if has_color then term.setTextColor(c) end end
 local function set_bg(c) if has_color then term.setBackgroundColor(c) end end
 
+-- ─── render primitives ──────────────────────────────────────────────────
+
+local function screen_wh() return term.getSize() end
+
+local function fill_line(y, bg)
+    local w = screen_wh()
+    set_bg(bg)
+    term.setCursorPos(1, y)
+    term.write(string.rep(" ", w))
+end
+
+local function pad_right(s, w)
+    if #s >= w then return s:sub(1, w) end
+    return s .. string.rep(" ", w - #s)
+end
+
+local function write_at(x, y, s, fg, bg)
+    term.setCursorPos(x, y)
+    if fg then set_fg(fg) end
+    if bg then set_bg(bg) end
+    term.write(s)
+end
+
+local function draw_title_bar(title, right_text)
+    local w = screen_wh()
+    fill_line(1, T.title_bg)
+    write_at(2, 1, title, T.title_fg, T.title_bg)
+    if right_text then
+        local x = math.max(2 + #title + 2, w - #right_text)
+        write_at(x, 1, right_text, T.title_fg, T.title_bg)
+    end
+    set_bg(T.bg); set_fg(T.fg)
+end
+
+local function draw_footer_bar(text)
+    local _, h = screen_wh()
+    fill_line(h, T.footer_bg)
+    write_at(2, h, text, T.footer_fg, T.footer_bg)
+    set_bg(T.bg); set_fg(T.fg)
+end
+
+local function draw_section(y, text)
+    local w = screen_wh()
+    set_bg(T.bg)
+    term.setCursorPos(2, y); term.write(string.rep(" ", w - 2))  -- clear the row
+    write_at(2, y, string.rep("\140", 2) .. " ", T.section, T.bg)  -- ── prefix (char 140 = ─)
+    write_at(5, y, text, T.section, T.bg)
+    -- trailing dashes to edge
+    local trail_x = 5 + #text + 1
+    if trail_x < w - 1 then
+        write_at(trail_x, y, " " .. string.rep("\140", w - trail_x - 1), T.section, T.bg)
+    end
+end
+
 local function clear_screen()
-    set_bg(colors.black); set_fg(colors.white)
-    term.clear(); term.setCursorPos(1, 1)
+    set_bg(T.bg); set_fg(T.fg)
+    term.clear()
 end
 
-local function header(subtitle)
-    clear_screen()
-    set_fg(colors.yellow); print("== Energy Dashboard Installer ==")
-    if subtitle then set_fg(colors.lightGray); print(subtitle) end
-    set_fg(colors.white); print()
+-- ─── menu item ──────────────────────────────────────────────────────────
+
+-- Item shape:
+--   { tag = "[install] ", tag_color = T.install, label = "collector",
+--     desc = "…",         action = "install", component = "collector" }
+--
+-- Special forms:
+--   { section = "Components" }  — non-selectable section header
+--   { spacer = true }           — non-selectable empty row
+
+local function is_selectable(it)
+    return not it.section and not it.spacer
 end
 
-local function pause_and_return()
-    set_fg(colors.lightGray)
-    print()
-    print("Press any key to continue...")
-    set_fg(colors.white)
-    os.pullEvent("key")
+local function draw_menu_item(y, it, selected)
+    local w = screen_wh()
+    if it.section then
+        draw_section(y, it.section)
+        return
+    end
+    if it.spacer then
+        fill_line(y, T.bg)
+        return
+    end
+
+    local bg = selected and T.sel_bg or T.bg
+    local fg = selected and T.sel_fg or T.fg
+
+    fill_line(y, bg)
+
+    -- cursor chevron when selected
+    if selected then
+        write_at(2, y, "\16", T.sel_fg, T.sel_bg)   -- char 16 = ► in CC charset
+    end
+
+    -- tag with semantic colour (but respect selection)
+    local x = 4
+    if it.tag then
+        local tag_fg = selected and T.sel_fg or (it.tag_color or T.fg)
+        write_at(x, y, it.tag, tag_fg, bg)
+        x = x + #it.tag
+    end
+
+    -- label
+    write_at(x, y, it.label or "", fg, bg)
+    x = x + #(it.label or "")
+
+    -- description (dim, right-trailing)
+    if it.desc and x + 2 < w - 1 then
+        local max = w - x - 3
+        local desc = it.desc
+        if #desc > max then desc = desc:sub(1, max - 1) .. "\7" end  -- char 7 = ellipsis-ish
+        write_at(x + 2, y, desc, selected and T.sel_fg or T.dim, bg)
+    end
+end
+
+-- ─── arrow-key menu ─────────────────────────────────────────────────────
+
+local function first_selectable(items)
+    for i, it in ipairs(items) do if is_selectable(it) then return i end end
+    return 1
+end
+local function last_selectable(items)
+    local last = 1
+    for i, it in ipairs(items) do if is_selectable(it) then last = i end end
+    return last
+end
+
+local function arrow_menu(items, title, right_text, footer_text)
+    local sel = first_selectable(items)
+    while true do
+        clear_screen()
+        draw_title_bar(title or "Energy Dashboard Installer", right_text)
+        -- spacer row
+        fill_line(2, T.bg)
+
+        local _, h = screen_wh()
+        local start_y = 3
+        local max_rows = h - start_y - 1   -- leave room for footer
+
+        -- simple viewport: show items from 1 and trust that we fit for now.
+        -- If the list grows long we can add scrolling later.
+        local offset = 0
+        if #items > max_rows then offset = math.min(sel - 1, #items - max_rows) end
+
+        for i = 1, math.min(max_rows, #items) do
+            local idx = i + offset
+            local it = items[idx]
+            if it then draw_menu_item(start_y + i - 1, it, idx == sel) end
+        end
+
+        draw_footer_bar(footer_text or " \24\25  navigate     \30  select     q  quit")
+
+        local _, key = os.pullEvent("key")
+        if key == keys.up then
+            local i = sel - 1
+            while i >= 1 and not is_selectable(items[i]) do i = i - 1 end
+            if i >= 1 then sel = i end
+        elseif key == keys.down then
+            local i = sel + 1
+            while i <= #items and not is_selectable(items[i]) do i = i + 1 end
+            if i <= #items then sel = i end
+        elseif key == keys.home then sel = first_selectable(items)
+        elseif key == keys.end_ then sel = last_selectable(items)
+        elseif key == keys.enter then return items[sel]
+        elseif key == keys.q then return nil
+        end
+    end
 end
 
 -- ─── state (what's installed) ───────────────────────────────────────────
 
 local function load_state()
     if not fs.exists(STATE_FILE) then return { installed = {} } end
-    local f = fs.open(STATE_FILE, "r")
-    if not f then return { installed = {} } end
+    local f = fs.open(STATE_FILE, "r"); if not f then return { installed = {} } end
     local data = f.readAll(); f.close()
     local ok, s = pcall(textutils.unserialise, data)
     if not ok or type(s) ~= "table" then return { installed = {} } end
@@ -56,27 +233,33 @@ local function load_state()
 end
 
 local function save_state(s)
-    local f = fs.open(STATE_FILE, "w")
-    if not f then return false end
-    f.write(textutils.serialise(s))
-    f.close()
+    local f = fs.open(STATE_FILE, "w"); if not f then return false end
+    f.write(textutils.serialise(s)); f.close()
     return true
 end
 
 -- ─── manifest ───────────────────────────────────────────────────────────
 
 local function fetch_manifest()
-    set_fg(colors.lightGray)
-    write("Fetching manifest... ")
+    clear_screen()
+    draw_title_bar("Energy Dashboard Installer", "starting")
+    fill_line(2, T.bg)
+    write_at(2, 4, "Fetching manifest...", T.dim, T.bg)
+
     local res = http.get(MANIFEST_URL)
-    if not res then set_fg(colors.red); print("FAILED"); return nil end
+    if not res then
+        write_at(26, 4, "FAILED", T.err, T.bg)
+        write_at(2, 6, "Could not reach GitHub. Check http enabled in CC:Tweaked config.", T.err, T.bg)
+        return nil
+    end
     local body = res.readAll(); res.close()
     local ok, m = pcall(textutils.unserialiseJSON, body)
     if not ok or type(m) ~= "table" or type(m.components) ~= "table" then
-        set_fg(colors.red); print("FAILED (unparseable)"); return nil
+        write_at(26, 4, "PARSE FAIL", T.err, T.bg)
+        return nil
     end
-    set_fg(colors.lime); print("OK (v" .. tostring(m.version or "?") .. ")")
-    set_fg(colors.white)
+    write_at(26, 4, "OK", T.ok, T.bg)
+    write_at(30, 4, "v" .. tostring(m.version or "?"), T.dim, T.bg)
     return m
 end
 
@@ -85,229 +268,260 @@ end
 local function download(url, target)
     local dir = fs.getDir(target)
     if dir ~= "" and not fs.exists(dir) then fs.makeDir(dir) end
-    local res = http.get(url)
-    if not res then return false, "http.get failed" end
+    local res = http.get(url); if not res then return false, "http.get failed" end
     local body = res.readAll(); res.close()
-    local f = fs.open(target, "w")
-    if not f then return false, "cannot open " .. target end
+    local f = fs.open(target, "w"); if not f then return false, "cannot open " .. target end
     f.write(body); f.close()
     return true, #body
 end
 
+local function write_startup(main)
+    -- /startup.lua detects which component is present and runs it.
+    -- Works even if multiple main files are on disk (unusual).
+    local f = fs.open(STARTUP_FILE, "w")
+    if not f then return false end
+    f.writeLine("-- edash startup — generated by edi. Safe to delete to disable auto-run.")
+    f.writeLine("for _, name in ipairs({\"" .. main .. "\", \"collector.lua\", \"core.lua\", \"panel.lua\"}) do")
+    f.writeLine("  if fs.exists(name) then shell.run(name); return end")
+    f.writeLine("end")
+    f.close()
+    return true
+end
+
 local function install_component(manifest, name)
     local c = manifest.components[name]
-    if not c then set_fg(colors.red); print("Unknown component: " .. name); return false end
+    if not c then return false end
 
-    set_fg(colors.yellow); print("Installing " .. name .. " (" .. #c.files .. " files)")
-    set_fg(colors.lightGray); print("  " .. (c.description or ""))
-    print()
+    clear_screen()
+    draw_title_bar("Installing " .. name, "v" .. tostring(manifest.version or "?"))
+    fill_line(2, T.bg)
+    write_at(2, 4, c.description or "", T.dim, T.bg)
 
+    local total = #c.files
     local installed_files = {}
     for i, file in ipairs(c.files) do
+        local y = 6 + i - 1
+
+        -- step prefix
+        local step = string.format("  [%d/%d]  ", i, total)
+        write_at(2, y, step, T.dim, T.bg)
+        write_at(2 + #step, y, file.dst, T.fg, T.bg)
+
+        -- dots filler to right-align status
+        local w = screen_wh()
+        local status_x = w - 10
+        write_at(2 + #step + #file.dst + 1, y, string.rep(".", math.max(0, status_x - (2 + #step + #file.dst + 2))), T.dim, T.bg)
+
         local url = manifest.repo .. "/" .. file.src
-        set_fg(colors.lightGray); write(string.format("  [%d/%d] %s ... ", i, #c.files, file.dst))
         local ok, sz = download(url, file.dst)
         if ok then
-            set_fg(colors.lime); print("OK (" .. sz .. " B)")
+            write_at(status_x, y, pad_right(string.format("OK %dB", sz), 10), T.ok, T.bg)
             installed_files[#installed_files + 1] = file.dst
         else
-            set_fg(colors.red); print("FAILED (" .. tostring(sz) .. ")")
-            set_fg(colors.white)
+            write_at(status_x, y, "FAILED", T.err, T.bg)
+            fill_line(y + 2, T.bg)
+            write_at(2, y + 2, "error: " .. tostring(sz), T.err, T.bg)
+            draw_footer_bar(" press any key to return to menu")
+            os.pullEvent("key")
             return false
         end
     end
 
-    -- record in state
+    -- write startup
+    local start_y = 6 + total + 1
+    write_at(2, start_y, "  /startup.lua  ", T.dim, T.bg)
+    if write_startup(c.main) then
+        write_at(2 + 16, start_y, "OK", T.ok, T.bg)
+    else
+        write_at(2 + 16, start_y, "WARN", T.warn, T.bg)
+    end
+
+    -- record state
     local state = load_state()
     state.installed[name] = {
-        version = manifest.version,
-        files   = installed_files,
-        main    = c.main,
+        version      = manifest.version,
+        files        = installed_files,
+        main         = c.main,
         installed_at = os.epoch("utc"),
     }
     save_state(state)
 
-    print()
-    set_fg(colors.lime); print("Installed " .. name)
-    if c.main then
-        set_fg(colors.white); print("Run with: "); set_fg(colors.yellow); print("  " .. c.main:gsub("%.lua$", ""))
-    end
-    set_fg(colors.white)
+    -- success summary
+    local summary_y = start_y + 2
+    fill_line(summary_y, T.bg)
+    write_at(2, summary_y, "Installed " .. name .. ". Run with:  ", T.ok, T.bg)
+    write_at(2 + #("Installed " .. name .. ". Run with:  "), summary_y,
+             c.main:gsub("%.lua$", ""), T.fg, T.bg)
+    write_at(2, summary_y + 1, "Reboot or press Enter — first run will launch 'configure'.",
+             T.dim, T.bg)
+
+    draw_footer_bar(" press any key to return to menu")
+    os.pullEvent("key")
     return true
 end
 
 local function uninstall_component(name)
     local state = load_state()
     local rec = state.installed[name]
-    if not rec then
-        set_fg(colors.yellow); print("Not installed: " .. name); set_fg(colors.white)
-        return false
-    end
-    set_fg(colors.yellow); print("Uninstalling " .. name); set_fg(colors.white)
+    if not rec then return false end
+
+    clear_screen()
+    draw_title_bar("Uninstalling " .. name)
+    fill_line(2, T.bg)
+
+    local y = 4
     for _, path in ipairs(rec.files or {}) do
         if fs.exists(path) then
             fs.delete(path)
-            set_fg(colors.lightGray); print("  removed " .. path); set_fg(colors.white)
+            write_at(2, y, "  removed  ", T.dim, T.bg)
+            write_at(13, y, path, T.fg, T.bg)
+            y = y + 1
         end
     end
     state.installed[name] = nil
     save_state(state)
-    set_fg(colors.lime); print("Done"); set_fg(colors.white)
+    fill_line(y + 1, T.bg)
+    write_at(2, y + 1, "Done. /startup.lua left in place in case other components remain.",
+             T.ok, T.bg)
+    draw_footer_bar(" press any key")
+    os.pullEvent("key")
     return true
 end
 
 local function update_all(manifest)
     local state = load_state()
-    local any = false
-    for name in pairs(state.installed) do
-        any = true
-        install_component(manifest, name)
-        print()
+    local names = {}
+    for n in pairs(state.installed) do names[#names + 1] = n end
+    if #names == 0 then
+        clear_screen()
+        draw_title_bar("Update")
+        fill_line(2, T.bg)
+        write_at(2, 4, "nothing installed yet — pick [install] from the menu first.",
+                 T.dim, T.bg)
+        draw_footer_bar(" press any key")
+        os.pullEvent("key")
+        return
     end
-    if not any then
-        set_fg(colors.lightGray); print("Nothing installed yet."); set_fg(colors.white)
-    end
+    for _, n in ipairs(names) do install_component(manifest, n) end
 end
 
--- ─── interactive menu ───────────────────────────────────────────────────
+-- ─── menu builders ──────────────────────────────────────────────────────
 
-local function arrow_menu(items, title_fn)
-    local sel = 1
-    local _, h = term.getSize()
-    local max_visible = h - 5
-    while true do
-        clear_screen()
-        set_fg(colors.yellow); print("== Energy Dashboard Installer ==")
-        if title_fn then set_fg(colors.lightGray); print(title_fn()) end
-        print()
-
-        local offset = 0
-        if #items > max_visible then offset = math.min(sel - 1, #items - max_visible) end
-
-        for i = 1, math.min(max_visible, #items) do
-            local idx = i + offset
-            local it = items[idx]
-            if idx == sel then
-                set_fg(colors.black); set_bg(colors.white)
-            else
-                set_fg(colors.white); set_bg(colors.black)
-            end
-            term.clearLine()
-            write(" " .. (it.label or tostring(it)))
-            if it.tag then
-                set_fg(idx == sel and colors.gray or colors.lightGray)
-                write("  " .. it.tag)
-            end
-            print()
-        end
-
-        set_bg(colors.black)
-        if #items > max_visible then
-            set_fg(colors.lightGray); print("  (" .. sel .. "/" .. #items .. ")")
-        end
-
-        set_fg(colors.lightGray)
-        term.setCursorPos(1, h)
-        write("Up/Down  Enter=select  Q=quit")
-
-        local _, key = os.pullEvent("key")
-        if key == keys.up and sel > 1 then sel = sel - 1
-        elseif key == keys.down and sel < #items then sel = sel + 1
-        elseif key == keys.enter then set_bg(colors.black); return items[sel]
-        elseif key == keys.q then return nil end
+local function tag_for_install(installed)
+    if installed then
+        return "[reinstall] ", T.reinstall
+    else
+        return "[install]   ", T.install
     end
 end
 
 local function build_main_menu(manifest)
     local state = load_state()
-    local items = {}
+    local items = { { section = "Components" } }
 
-    -- components (install / reinstall)
     local names = {}
     for n in pairs(manifest.components) do names[#names + 1] = n end
     table.sort(names)
     for _, n in ipairs(names) do
         local c = manifest.components[n]
         local installed = state.installed[n] ~= nil
+        local tag, tag_color = tag_for_install(installed)
         items[#items + 1] = {
-            label  = (installed and "[reinstall] " or "[install]   ") .. n,
-            tag    = c.description or "",
+            tag = tag, tag_color = tag_color,
+            label = pad_right(n, 11),
+            desc  = c.description or "",
             action = "install", component = n,
         }
     end
 
-    -- update installed
+    items[#items + 1] = { spacer = true }
+    items[#items + 1] = { section = "Actions" }
     items[#items + 1] = {
-        label  = "[update]    all installed",
-        tag    = "re-fetch every component currently on disk",
+        tag = "[update]    ", tag_color = T.update,
+        label = pad_right("all installed", 14),
+        desc  = "re-fetch every component currently on disk",
         action = "update",
     }
-
-    -- uninstall submenu
     items[#items + 1] = {
-        label  = "[uninstall] ...",
-        tag    = "remove an installed component",
+        tag = "[uninstall] ", tag_color = T.uninstall,
+        label = pad_right("...", 14),
+        desc  = "remove an installed component",
         action = "uninstall_menu",
     }
-
-    -- exit
-    items[#items + 1] = { label = "[exit]", action = "quit" }
+    items[#items + 1] = {
+        tag = "[exit]      ", tag_color = T.exit,
+        label = "",
+        action = "quit",
+    }
     return items
 end
 
 local function build_uninstall_menu()
     local state = load_state()
-    local items = {}
+    local items = { { section = "Uninstall" } }
     local names = {}
     for n in pairs(state.installed) do names[#names + 1] = n end
     table.sort(names)
-    for _, n in ipairs(names) do
-        items[#items + 1] = { label = n, action = "uninstall", component = n }
+    if #names == 0 then
+        items[#items + 1] = {
+            tag = "            ", label = "(nothing installed)",
+        }
+    else
+        for _, n in ipairs(names) do
+            items[#items + 1] = {
+                tag = "[uninstall] ", tag_color = T.uninstall,
+                label = n,
+                action = "uninstall", component = n,
+            }
+        end
     end
-    if #items == 0 then
-        items[#items + 1] = { label = "(nothing installed)", action = "back" }
-    end
-    items[#items + 1] = { label = "[back]", action = "back" }
+    items[#items + 1] = { spacer = true }
+    items[#items + 1] = {
+        tag = "[back]      ", tag_color = T.back,
+        label = "",
+        action = "back",
+    }
     return items
 end
 
 -- ─── main ───────────────────────────────────────────────────────────────
 
+local function status_line(manifest)
+    local state = load_state()
+    local n = 0
+    for _ in pairs(state.installed) do n = n + 1 end
+    return string.format("manifest v%s  %d installed",
+        tostring(manifest.version or "?"), n)
+end
+
 local function main()
-    header()
     local manifest = fetch_manifest()
-    if not manifest then pause_and_return(); return end
+    if not manifest then
+        draw_footer_bar(" press any key")
+        os.pullEvent("key")
+        clear_screen(); return
+    end
 
     while true do
         local choice = arrow_menu(
             build_main_menu(manifest),
-            function()
-                local state = load_state()
-                local n = 0
-                for _ in pairs(state.installed) do n = n + 1 end
-                return "manifest v" .. (manifest.version or "?") .. "   " .. n .. " installed"
-            end
+            "Energy Dashboard Installer",
+            status_line(manifest),
+            " \24\25  navigate     \30  select     q  quit"
         )
         if not choice or choice.action == "quit" then
-            clear_screen()
-            return
+            clear_screen(); return
         elseif choice.action == "install" then
-            clear_screen()
             install_component(manifest, choice.component)
-            pause_and_return()
         elseif choice.action == "update" then
-            clear_screen()
             update_all(manifest)
-            pause_and_return()
         elseif choice.action == "uninstall_menu" then
             while true do
-                local sub = arrow_menu(build_uninstall_menu(), function() return "uninstall menu" end)
+                local sub = arrow_menu(build_uninstall_menu(),
+                    "Energy Dashboard Installer", "uninstall",
+                    " \24\25  navigate     \30  select     q  back")
                 if not sub or sub.action == "back" then break end
-                if sub.action == "uninstall" then
-                    clear_screen()
-                    uninstall_component(sub.component)
-                    pause_and_return()
-                end
+                if sub.action == "uninstall" then uninstall_component(sub.component) end
             end
         end
     end

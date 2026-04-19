@@ -6,20 +6,28 @@
 --
 -- Run on an advanced computer with a monitor attached and a modem.
 
-local comms  = require("common.comms")
-local log    = require("common.log")
-local ppm    = require("common.ppm")
-local util   = require("common.util")
-local gfx    = require("graphics.core")
-local themes = require("graphics.themes")
+local comms     = require("common.comms")
+local log       = require("common.log")
+local ppm       = require("common.ppm")
+local util      = require("common.util")
+local gfx       = require("graphics.core")
+local themes    = require("graphics.themes")
+local configlib = require("common.config")
+
+-- First-run wizard: auto-launch `configure` on first boot so the user
+-- picks which monitor + rate unit they want before we start drawing.
+configlib.run_first_run_wizard("panel")
 
 -- ─── config ──────────────────────────────────────────────────────────────
 
-local REDRAW_MS   = 250
-local STALE_MS    = 5000
-local RATE_UNIT   = "t"    -- "t" = FE/tick (MC native), "s" = FE/second
-local THEME       = themes.default
-local P           = themes.pairs(THEME)
+local cfg = configlib.load("panel")
+local REDRAW_MS         = cfg.redraw_ms or 250
+local STALE_MS          = cfg.stale_ms  or 5000
+local RATE_UNIT         = cfg.rate_unit or "t"     -- "t" = FE/tick (MC native), "s" = FE/second
+local PREFERRED_MONITOR = cfg.monitor               -- nil = auto-pick first
+local THEME_NAME        = cfg.theme or "default"
+local THEME             = themes[THEME_NAME] or themes.default
+local P                 = themes.pairs(THEME)
 
 -- ─── state ───────────────────────────────────────────────────────────────
 
@@ -125,12 +133,22 @@ log.info("starting")
 local sides = comms.open_all_modems()
 if #sides == 0 then log.error("no modem found"); error("attach a modem", 0) end
 
-local mon = ppm.find_one("monitor")
+local mon, mon_name
+if PREFERRED_MONITOR and peripheral.getType(PREFERRED_MONITOR) == "monitor" then
+    mon = peripheral.wrap(PREFERRED_MONITOR)
+    mon_name = PREFERRED_MONITOR
+else
+    if PREFERRED_MONITOR then
+        log.warn("configured monitor '" .. PREFERRED_MONITOR .. "' not found; falling back to auto")
+    end
+    mon, mon_name = ppm.find_one("monitor")
+end
 if not mon then log.error("no monitor found"); error("attach an advanced monitor", 0) end
 mon.setTextScale(1)
 
 local mw, mh = mon.getSize()
-log.info(string.format("modem=%s monitor=%dx%d", sides[1], mw, mh))
+log.info(string.format("modem=%s monitor=%s (%dx%d) rate=/%s theme=%s",
+    sides[1], tostring(mon_name), mw, mh, RATE_UNIT, THEME_NAME))
 
 parallel.waitForAny(
     -- receive loop
