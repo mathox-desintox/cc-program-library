@@ -132,7 +132,9 @@ local COLLECTOR_PAGE = component_page("collector", "Collector", {
     { key = "peripheral",   label = "peripheral",   kind = "peripheral", ptype = "flux_accessor_ext",
       help = "Which flux_accessor_ext to read. Leave 'auto' to pick the first one found at startup." },
     { key = "tick_seconds", label = "tick_seconds", kind = "number",
-      help = "How often the collector reads the accessor and broadcasts its state. Default 1 second." },
+      help = "Sub-second sample cadence. 0.05 = one MC tick (20 Hz). Lower = finer per-tick accuracy; samples are buffered locally and a batch is shipped to the core every broadcast_seconds." },
+    { key = "broadcast_seconds", label = "broadcast_seconds", kind = "number",
+      help = "How often the buffered sample batch is flushed to the core. Default 1.0 s. Panel data is at best this stale." },
 })
 
 local CORE_PAGE = component_page("core", "Core", {

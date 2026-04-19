@@ -25,8 +25,13 @@ M.DEFAULTS = {
     network_id = "default",
 
     collector = {
-        peripheral   = nil,   -- auto-pick first flux_accessor_ext if nil
-        tick_seconds = 1,     -- broadcast cadence
+        peripheral       = nil,    -- auto-pick first flux_accessor_ext if nil
+        tick_seconds     = 0.05,   -- sample cadence; 0.05 = 1 MC tick (20 Hz)
+        broadcast_seconds = 1.0,   -- how often to flush a batch to the core.
+                                    -- Each broadcast carries every sample
+                                    -- taken since the previous flush, so the
+                                    -- core sees full per-tick resolution
+                                    -- with only 1 packet/sec of wire traffic.
     },
     core = {
         broadcast_interval_ms = 1000,

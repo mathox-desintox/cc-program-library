@@ -18,15 +18,16 @@ configlib.run_first_run_wizard("collector")
 
 -- --- config --------------------------------------------------------------
 
-local COMPONENT_VERSION = "0.6.0"
+local COMPONENT_VERSION = "0.7.0"
 
 local all_cfg = configlib.load_all()
 local cfg     = all_cfg.collector or {}
-local NETWORK_ID      = all_cfg.network_id or "default"
-local TICK_SECONDS    = cfg.tick_seconds or 1
-local RETRY_SECONDS   = 5
-local PERIPHERAL_TYPE = "flux_accessor_ext"
-local PREFERRED_PNAME = cfg.peripheral
+local NETWORK_ID        = all_cfg.network_id or "default"
+local TICK_SECONDS      = cfg.tick_seconds or 0.05
+local BROADCAST_SECONDS = cfg.broadcast_seconds or 1.0
+local RETRY_SECONDS     = 5
+local PERIPHERAL_TYPE   = "flux_accessor_ext"
+local PREFERRED_PNAME   = cfg.peripheral
 
 comms.set_network_id(NETWORK_ID)
 
@@ -121,7 +122,9 @@ local function update_ui()
     else
         send_rows[#send_rows + 1] = { label = "last send", value = "never" }
     end
-    send_rows[#send_rows + 1] = { label = "tick", value = tostring(TICK_SECONDS) .. "s" }
+    send_rows[#send_rows + 1] = { label = "tick",       value = tostring(TICK_SECONDS) .. "s" }
+    send_rows[#send_rows + 1] = { label = "flush",      value = tostring(BROADCAST_SECONDS) .. "s" }
+    send_rows[#send_rows + 1] = { label = "batch last", value = tostring(trackers.last_batch_size or 0) }
 
     local reading_rows
     if trackers.last_reading then
@@ -149,8 +152,9 @@ end
 log.init("collector", log.LEVEL.INFO, "/edash_collector.log")
 log.silence_terminal(true)
 log.info("collector " .. COMPONENT_VERSION .. " starting")
-log.info(string.format("config: tick=%ds network_id=%s peripheral=%s",
-    TICK_SECONDS, NETWORK_ID, tostring(PREFERRED_PNAME or "auto")))
+log.info(string.format("config: tick=%ss flush=%ss network_id=%s peripheral=%s",
+    tostring(TICK_SECONDS), tostring(BROADCAST_SECONDS), NETWORK_ID,
+    tostring(PREFERRED_PNAME or "auto")))
 
 trackers.modem_sides = comms.open_all_modems()
 if #trackers.modem_sides == 0 then
@@ -182,17 +186,43 @@ local function main_loop()
             set_status("RUNNING", colors.lime)
             mark_event("peripheral wrapped at " .. tostring(name))
             log.info("peripheral wrapped at " .. tostring(name))
+
+            -- Sample at TICK_SECONDS, buffer, broadcast at BROADCAST_SECONDS.
+            -- The latest `reading` carries slow-changing fields (capacity,
+            -- cellCount, online, ...); the `samples` array attached to it
+            -- holds every (ts, stored) taken since the last flush so the
+            -- core sees full per-tick resolution without 20x wire traffic.
+            local batch = {}
+            local last_broadcast_ms = os.epoch("utc")
+            local broadcast_ms = BROADCAST_SECONDS * 1000
+
             while ppm.is_live(name) do
                 local ok, reading = pcall(snapshot, accessor)
                 if ok and reading then
-                    broadcast(reading)
-                    trackers.packets_sent = trackers.packets_sent + 1
-                    trackers.last_send_ms = os.epoch("utc")
+                    local sample_ts = os.epoch("utc")
+                    batch[#batch + 1] = { ts = sample_ts, stored = reading.stored }
                     trackers.last_reading = reading
                 else
                     log.warn("snapshot error: " .. tostring(reading))
                     mark_event("snapshot error")
                 end
+
+                local now_ms = os.epoch("utc")
+                if trackers.last_reading and #batch > 0
+                        and (now_ms - last_broadcast_ms) >= broadcast_ms then
+                    -- Piggy-back the batch onto a fresh copy of the latest
+                    -- reading so slow-changing state goes out with the ticks.
+                    local payload = {}
+                    for k, v in pairs(trackers.last_reading) do payload[k] = v end
+                    payload.samples = batch
+                    broadcast(payload)
+                    trackers.packets_sent    = trackers.packets_sent + 1
+                    trackers.last_send_ms    = now_ms
+                    trackers.last_batch_size = #batch
+                    batch = {}
+                    last_broadcast_ms = now_ms
+                end
+
                 update_ui()
                 sleep(TICK_SECONDS)
             end

@@ -15,7 +15,7 @@ local util      = require("common.util")
 local configlib = require("common.config")
 local status    = require("common.status")
 
-local COMPONENT_VERSION = "0.6.0"
+local COMPONENT_VERSION = "0.7.0"
 
 -- First-run wizard: auto-launch `configure` on first boot so intervals,
 -- state-file path, and log-file path can be adjusted before anything
@@ -175,6 +175,10 @@ local function get_or_create_entry(id)
         samples_since_5m_rollup = 0,
         lifetime_produced_fe = restored_produced,
         lifetime_consumed_fe = restored_consumed,
+        -- Last-seen per-tick stored value, used for lifetime delta
+        -- accounting across batched packets. Starts nil so the very
+        -- first sample doesn't synthesise a spurious delta.
+        last_tick_stored = nil,
     }
     collectors[id] = entry
     log.info("collector " .. id .. " registered")
@@ -187,23 +191,40 @@ local function ingest(msg)
     entry.last_msg = msg
     entry.last_ingest_ms = now_ms
 
-    local stored = msg.payload.stored or 0
-    local sample = { ts = msg.ts, stored = stored }
-
-    -- Update lifetime produced/consumed from delta vs previous raw sample.
-    local prev = entry.history_1s:at(1)  -- previous newest
-    if prev then
-        local delta = stored - prev.stored
-        if delta > 0 then
-            entry.lifetime_produced_fe = entry.lifetime_produced_fe + delta
-            lifetime.produced_fe       = lifetime.produced_fe + delta
-        elseif delta < 0 then
-            entry.lifetime_consumed_fe = entry.lifetime_consumed_fe + (-delta)
-            lifetime.consumed_fe       = lifetime.consumed_fe + (-delta)
-        end
+    -- Collectors 0.7.0+ ship a `samples` array carrying every per-tick
+    -- reading taken since the last flush. Older collectors (or the
+    -- degenerate case of exactly one sample) still work via the single
+    -- top-level `stored` field.
+    local samples = msg.payload.samples
+    if type(samples) ~= "table" or #samples == 0 then
+        samples = { { ts = msg.ts, stored = msg.payload.stored or 0 } }
     end
 
-    -- Push raw sample to 1s ring.
+    -- Lifetime counters track the per-tick delta across every sample in
+    -- the batch so no produced/consumed energy is missed when we later
+    -- average the batch down into a single ring entry.
+    local sum = 0
+    for _, s in ipairs(samples) do
+        local v = s.stored or 0
+        if entry.last_tick_stored ~= nil then
+            local delta = v - entry.last_tick_stored
+            if delta > 0 then
+                entry.lifetime_produced_fe = entry.lifetime_produced_fe + delta
+                lifetime.produced_fe       = lifetime.produced_fe + delta
+            elseif delta < 0 then
+                entry.lifetime_consumed_fe = entry.lifetime_consumed_fe + (-delta)
+                lifetime.consumed_fe       = lifetime.consumed_fe + (-delta)
+            end
+        end
+        entry.last_tick_stored = v
+        sum = sum + v
+    end
+
+    -- Push a single averaged entry to the 1s ring. Timestamp is the
+    -- newest sample's ts so downstream rate math uses wall-clock dt.
+    local avg       = sum / #samples
+    local newest_ts = samples[#samples].ts or msg.ts
+    local sample    = { ts = newest_ts, stored = avg }
     entry.history_1s:push(sample)
     entry.samples_since_1m_rollup = entry.samples_since_1m_rollup + 1
 
