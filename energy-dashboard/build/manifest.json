@@ -1,6 +1,6 @@
 {
     "schema": 1,
-    "version": "0.6.0",
+    "version": "0.6.1",
     "repo": "https://raw.githubusercontent.com/mathox-desintox/cc-program-library/main/energy-dashboard",
     "components": {
         "collector": {

@@ -16,7 +16,7 @@ local themes    = require("graphics.themes")
 local configlib = require("common.config")
 local status    = require("common.status")
 
-local COMPONENT_VERSION = "0.6.0"
+local COMPONENT_VERSION = "0.6.1"
 
 -- First-run wizard: auto-launch `configure` on first boot so the user
 -- picks which monitor + rate unit they want before we start drawing.
@@ -57,11 +57,6 @@ local HORIZONS = {
     { key = "d7",  label = "7d",  tier = "h1", count = 168, window_s = 7*24*60*60,  min_samples = 3 },
     { key = "d30", label = "30d", tier = "h6", count = 120, window_s = 30*24*60*60, min_samples = 3 },
 }
-
--- Horizons at or above this key use timestamp-based hole-tolerant
--- rendering: server restarts / crashes leave gaps in the chart rather
--- than compressing the time axis.
-local HOLE_TOLERANT = { h8 = true, h24 = true, d7 = true, d30 = true }
 
 local function horizon_by_key(k)
     for _, h in ipairs(HORIZONS) do if h.key == k then return h end end
@@ -121,21 +116,57 @@ local function tail_series(tier, count)
     return values, ts
 end
 
--- Convert a stored-over-time series into a rate series in FE/s. Returns
--- (rates, rate_ts), each element aligned to the NEW end of a time pair.
--- If two samples are ≥ gap_ms apart we drop the pair entirely so server
--- downtime doesn't produce a spurious "flat" rate across the gap.
-local function stored_to_rates(values, ts, interval_ms)
-    local rates, rate_ts = {}, {}
-    local gap_ms = (interval_ms or 1000) * 3  -- anything larger is a hole
-    for i = 2, #values do
-        local dt_ms = ts[i] - ts[i - 1]
-        if dt_ms > 0 and dt_ms <= gap_ms then
-            rates[#rates + 1]   = (values[i] - values[i - 1]) / (dt_ms / 1000)
-            rate_ts[#rate_ts + 1] = ts[i]
+-- Bucket a stored-series into `width` equal-duration time buckets
+-- covering the newest `window_ms` ms. For each bucket we keep the LAST
+-- sample that lands in it. Returns two sparse arrays indexed 1..width
+-- (bucket_v[i] / bucket_ts[i] is nil when no sample fell into bucket i).
+--
+-- The newest bucket (i = width) is the one anchored at the newest
+-- sample; older buckets walk backwards from there. This makes the
+-- rightmost column of the chart a live view and the leftmost the edge
+-- of the requested window.
+local function bucket_stored(values, ts, width, window_ms)
+    local bucket_v, bucket_ts = {}, {}
+    if #values == 0 then return bucket_v, bucket_ts end
+    local newest = ts[#ts]
+    local bucket_ms = window_ms / width
+    for i = 1, #values do
+        local age = newest - ts[i]
+        local b = width - math.floor(age / bucket_ms)
+        if b >= 1 and b <= width then
+            -- Keep the LAST sample in each bucket (iteration is oldest->
+            -- newest, so a later assignment naturally wins).
+            bucket_v[b]  = values[i]
+            bucket_ts[b] = ts[i]
         end
     end
-    return rates, rate_ts
+    return bucket_v, bucket_ts
+end
+
+-- Given per-bucket stored snapshots, produce a per-column rate series.
+-- Rate at column b is (stored[b] - stored[prev]) / (ts[b] - ts[prev])
+-- where prev is the most recent earlier bucket that had a sample. This
+-- naturally stretches rate across holes (downtime) and produces nil for
+-- columns that had no sample at all (so the chart renders a gap).
+local function bucket_to_rates(bucket_v, bucket_ts, width)
+    local rates = {}
+    local prev_v, prev_ts
+    for b = 1, width do
+        if bucket_v[b] ~= nil then
+            if prev_v ~= nil and bucket_ts[b] > prev_ts then
+                rates[b] = (bucket_v[b] - prev_v) / ((bucket_ts[b] - prev_ts) / 1000)
+            end
+            prev_v, prev_ts = bucket_v[b], bucket_ts[b]
+        end
+    end
+    return rates
+end
+
+-- Count non-nil entries in a sparse array of length `width`.
+local function sparse_count(arr, width)
+    local n = 0
+    for i = 1, width do if arr[i] ~= nil then n = n + 1 end end
+    return n
 end
 
 -- Rate in FE/s across the whole window: prefer endpoint-based (more
@@ -193,42 +224,44 @@ local function render(mon)
     tab_layout = draw_tabs(mon, 2, 7, selected_horizon)
     local hz = horizon_by_key(selected_horizon)
 
-    -- Load the selected horizon's tier, convert stored samples to rates.
-    local tier = (agg.history or {})[hz.tier]
-    local stored_vals, stored_ts = tail_series(tier, hz.count)
-    local rates, rate_ts = stored_to_rates(stored_vals, stored_ts, tier and tier.interval_ms)
-
     -- Reserve footer lines; whatever is left between row 8 and the footer
     -- is split between chart and stats.
     local foot_lines = 4           -- fill bar (1) + 2 footer lines
-    local stats_lines = 4          -- rate / high / low / vol / ETA on up to 4 rows
+    local stats_lines = 4          -- rate / high / low / vol / ETA rows
     local chart_top = 9
     local chart_bot = h - foot_lines - stats_lines - 1
     if chart_bot < chart_top then chart_bot = chart_top end
     local chart_h = chart_bot - chart_top + 1
     local chart_x, chart_w = 2, w - 2
 
+    -- Bucket the stored series into exactly chart_w time buckets over
+    -- the horizon's window, then diff adjacent buckets to get a per-
+    -- column rate. Each column represents (window / chart_w) seconds,
+    -- which is a stable x-axis: only the newest bucket changes rapidly,
+    -- older columns stay put. That fixes the "chart flies by" effect
+    -- that came from re-sampling 300 raw rates onto 35 columns.
+    local tier = (agg.history or {})[hz.tier]
+    local stored_vals, stored_ts = tail_series(tier, hz.count)
+    local window_ms = hz.window_s * 1000
+    local bucket_v, bucket_ts = bucket_stored(stored_vals, stored_ts, chart_w, window_ms)
+    local rates               = bucket_to_rates(bucket_v, bucket_ts, chart_w)
+
     local s
-    local have_enough = #rates >= (hz.min_samples or 2)
+    local have_enough = sparse_count(rates, chart_w) >= (hz.min_samples or 2)
     if have_enough then
-        local opts = {
+        s = chart.line_chart(mon, chart_x, chart_top, chart_w, chart_h, rates, {
             pos_color  = THEME.charging,
             neg_color  = THEME.draining,
             zero_color = THEME.bar_empty,
             bg         = THEME.bg,
-        }
-        if HOLE_TOLERANT[hz.key] then
-            opts.timestamps = rate_ts
-            opts.window_ms  = hz.window_s * 1000
-        end
-        s = chart.signed_chart(mon, chart_x, chart_top, chart_w, chart_h, rates, opts)
+        })
     else
         -- "Need more data" panel. Shows how much has been collected vs. the
         -- minimum threshold so the user knows whether to wait or switch tabs.
-        local have  = #rates
+        local have  = sparse_count(rates, chart_w)
         local need  = hz.min_samples or 2
         local line1 = string.format("Need more data for the %s window.", hz.label)
-        local line2 = string.format("collected %d / %d samples so far", have, need)
+        local line2 = string.format("collected %d / %d buckets so far", have, need)
         local line3
         if hz.tier == "h1" or hz.tier == "h6" or hz.tier == "m5" then
             line3 = "longer horizons build up slowly; keep the core running."
@@ -250,8 +283,8 @@ local function render(mon)
         gfx.indicator(mon, 2,    row, "rate",  6, util.fmtRate(rate_s, RATE_UNIT), P.label, rate_color(rate_s))
         gfx.indicator(mon, col2, row, "vol",   5, string.format("%.2f%%", vol_pct),  P.label, P.value)
         row = row + 1
-        -- High/low of the RATE series for this window (charging peak /
-        -- deepest draw). Labels gain a +/- prefix so the axis is obvious.
+        -- High/low of the bucketed RATE series (charging peak / deepest
+        -- draw within the window). +/- prefix makes the axis obvious.
         gfx.indicator(mon, 2,    row, "peak+", 6, util.fmtRate(s.max, RATE_UNIT),   P.label, P.ok)
         gfx.indicator(mon, col2, row, "peak-", 5, util.fmtRate(s.min, RATE_UNIT),   P.label, P.warn)
         row = row + 1

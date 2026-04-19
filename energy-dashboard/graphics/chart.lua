@@ -113,25 +113,118 @@ function M.column_chart(mon, x, y, w, h, values, opts)
     return s
 end
 
--- Draw a signed column chart of `values` at (x,y) over a box w×h. Used
--- for rate series where values may be positive or negative. A zero line
--- is drawn across the baseline row: positive values fill UP from there,
--- negative values fill DOWN. The y-axis auto-scales so both extremes are
--- visible; the baseline is positioned to keep the larger side from
--- clipping.
+-- Stats ignoring nil holes. Used by line_chart so callers can render
+-- legends (high / low / volatility) off the non-nil subset.
+local function stats_sparse(values, width)
+    local sum, n = 0, 0
+    local vmin, vmax = math.huge, -math.huge
+    for i = 1, width do
+        local v = values[i]
+        if v ~= nil then
+            if v < vmin then vmin = v end
+            if v > vmax then vmax = v end
+            sum = sum + v; n = n + 1
+        end
+    end
+    if n == 0 then return nil end
+    local mean = sum / n
+    local sq = 0
+    for i = 1, width do
+        local v = values[i]
+        if v ~= nil then
+            local d = v - mean
+            sq = sq + d * d
+        end
+    end
+    return { min = vmin, max = vmax, mean = mean, stdev = math.sqrt(sq / n), n = n }
+end
+
+-- Draw a signed LINE chart at (x, y) sized w×h. `values[c]` is the
+-- sample for chart column c (1..w) or nil for a hole (empty column).
+-- The chart auto-scales y to include zero so a flat baseline shows
+-- which direction is positive. Adjacent non-nil columns are connected
+-- with a stair-step fill so it reads as a line rather than bars.
 --
--- opts.timestamps     : parallel array of wall-clock ms. When present the
---                       x-axis maps by timestamp, leaving gaps for server
---                       downtime or missing samples (hole-tolerant mode).
--- opts.window_ms      : width of the x-axis in ms (required when
---                       timestamps given). x = 0 maps to newest-window_ms,
---                       x = w-1 maps to newest timestamp.
--- opts.pos_color      : colour for positive bars
--- opts.neg_color      : colour for negative bars
--- opts.zero_color     : colour of the baseline row (empty/no-data cells)
--- opts.bg             : colour to clear the box to first
+-- opts.pos_color      : colour for cells at-or-above the zero line
+-- opts.neg_color      : colour for cells below the zero line
+-- opts.zero_color     : colour for the baseline row
+-- opts.bg             : background colour to clear to first
 --
--- Returns the stats table (nil if no values).
+-- Returns a stats table (nil if no non-nil values).
+function M.line_chart(mon, x, y, w, h, values, opts)
+    opts = opts or {}
+    local pos_color  = opts.pos_color  or colors.lime
+    local neg_color  = opts.neg_color  or colors.orange
+    local zero_color = opts.zero_color or colors.gray
+    local bg         = opts.bg         or colors.black
+
+    local blank = string.rep(" ", w)
+    mon.setBackgroundColor(bg)
+    for r = 0, h - 1 do
+        mon.setCursorPos(x, y + r)
+        mon.write(blank)
+    end
+
+    local s = stats_sparse(values, w)
+    if not s then return nil end
+
+    -- Always include zero in the span so the baseline is meaningful and
+    -- flat-rate periods stay at a constant y instead of filling the box.
+    local vmax = math.max(s.max, 0)
+    local vmin = math.min(s.min, 0)
+    local span = vmax - vmin
+    if span <= 0 then span = 1 end
+
+    -- Row where zero sits (0-indexed from top).
+    local baseline_row
+    if s.min >= 0 then
+        baseline_row = h - 1
+    elseif s.max <= 0 then
+        baseline_row = 0
+    else
+        baseline_row = math.floor(vmax / span * (h - 1) + 0.5)
+    end
+
+    -- Draw the zero line first.
+    mon.setBackgroundColor(zero_color)
+    for c = 0, w - 1 do
+        mon.setCursorPos(x + c, y + baseline_row)
+        mon.write(" ")
+    end
+
+    -- Compute each column's row position.
+    local rows = {}
+    for c = 1, w do
+        local v = values[c]
+        if v ~= nil then
+            local frac = (v - vmin) / span            -- 0..1, 0 = vmin (bottom)
+            rows[c] = h - 1 - math.floor(frac * (h - 1) + 0.5)
+        end
+    end
+
+    -- Stair-step line: each column fills from its own row toward the next
+    -- column's row, so adjacent points are visually connected even when
+    -- their rows differ by several cells.
+    for c = 1, w do
+        local rc = rows[c]
+        if rc then
+            local rc_next = rows[c + 1] or rc
+            local color = ((values[c] or 0) >= 0) and pos_color or neg_color
+            mon.setBackgroundColor(color)
+            local ystart = math.min(rc, rc_next)
+            local yend   = math.max(rc, rc_next)
+            for r = ystart, yend do
+                mon.setCursorPos(x + c - 1, y + r)
+                mon.write(" ")
+            end
+        end
+    end
+
+    mon.setBackgroundColor(bg)
+    return s
+end
+
+-- Kept for legacy callers but no longer used by the panel.
 function M.signed_chart(mon, x, y, w, h, values, opts)
     opts = opts or {}
     local pos_color  = opts.pos_color  or colors.lime
