@@ -16,7 +16,7 @@ local themes    = require("graphics.themes")
 local configlib = require("common.config")
 local status    = require("common.status")
 
-local COMPONENT_VERSION = "0.7.4"
+local COMPONENT_VERSION = "0.7.5"
 
 -- First-run wizard: auto-launch `configure` on first boot so the user
 -- picks which monitor + rate unit they want before we start drawing.
@@ -237,11 +237,11 @@ local function render(mon)
     local chart_bot = h - foot_lines - stats_lines - 1
     if chart_bot < chart_top then chart_bot = chart_top end
     local chart_h = chart_bot - chart_top + 1
-    -- Reserve a left-side gutter for the y-axis labels (e.g. "+110 kFE/t"
-    -- at the top, "0 FE/t" at the bottom). 9 columns fits a formatted FE
-    -- rate at any SI magnitude plus a space before the chart.
+    -- Chart uses the full row width. Axis labels render on top of the
+    -- chart's top and bottom rows as a small overlay so we don't lose
+    -- horizontal resolution to a dedicated gutter.
+    local chart_x, chart_w = 2, w - 2
     local axis_w = 9
-    local chart_x, chart_w = 2 + axis_w, w - (2 + axis_w) - 1
 
     -- Bucket the stored series into exactly chart_w time buckets over
     -- the horizon's window, then diff adjacent buckets to get a per-
@@ -280,19 +280,6 @@ local function render(mon)
         end
     end
 
-    -- Axis labels. Top label sits on chart_top, bottom on chart_bot so
-    -- they line up with the y-range passed to hires_line_chart. We strip
-    -- the "+" fmtRate prefix because the chart position already carries
-    -- the sign.
-    local function axis_label(rate_s)
-        if rate_s == 0 then return (RATE_UNIT == "t") and "0 FE/t" or "0 FE/s" end
-        local t = util.fmtRate(rate_s, RATE_UNIT)
-        if t:sub(1, 1) == "+" then t = t:sub(2) end
-        return t
-    end
-    gfx.write(mon, 2, chart_top, util.truncate(axis_label(vmax), axis_w), P.label, axis_w, gfx.ALIGN.RIGHT)
-    gfx.write(mon, 2, chart_bot, util.truncate(axis_label(vmin), axis_w), P.label, axis_w, gfx.ALIGN.RIGHT)
-
     -- Chart is always drawn. hires_line_chart uses CC's teletext block
     -- characters to get 2x horizontal and 3x vertical sub-pixel
     -- resolution vs. the old cell-sized line, so flat-ish rate curves
@@ -305,6 +292,23 @@ local function render(mon)
         ymin      = vmin,
         ymax      = vmax,
     })
+
+    -- Axis labels painted AFTER the chart: the label background mask a
+    -- few cells of chart at the top-left and bottom-left, which is a
+    -- worthwhile trade for keeping full horizontal resolution. The "+"
+    -- sign from fmtRate is stripped since the chart position conveys it.
+    local function axis_label(rate_s)
+        if rate_s == 0 then return (RATE_UNIT == "t") and "0 FE/t" or "0 FE/s" end
+        local t = util.fmtRate(rate_s, RATE_UNIT)
+        if t:sub(1, 1) == "+" then t = t:sub(2) end
+        return t
+    end
+    gfx.write(mon, chart_x, chart_top,
+        " " .. util.pad(util.truncate(axis_label(vmax), axis_w), axis_w) .. " ",
+        P.label)
+    gfx.write(mon, chart_x, chart_bot,
+        " " .. util.pad(util.truncate(axis_label(vmin), axis_w), axis_w) .. " ",
+        P.label)
 
     -- Data availability for the derived stats. We require the series to
     -- span at least the horizon's window before exposing rate / peak /
