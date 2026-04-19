@@ -33,6 +33,20 @@ local T = {
     warn       = colors.yellow,
     err        = colors.red,
     accent     = colors.cyan,
+
+    -- Field value "pill" colours (mek-scada-style: each value sits in a
+    -- coloured box so it's obvious it's interactive. State colours:
+    --   normal   : gray pill, white text
+    --   selected : cyan pill, black text (row is also highlighted)
+    --   changed  : yellow pill when the value differs from the default
+    --              (only applied in the unselected state so the
+    --              selection colour never gets drowned out)
+    pill_bg           = colors.gray,
+    pill_fg           = colors.white,
+    pill_sel_bg       = colors.cyan,
+    pill_sel_fg       = colors.black,
+    pill_changed_bg   = colors.yellow,
+    pill_changed_fg   = colors.black,
 }
 
 local function set_fg(c) if has_color then term.setTextColor(c) end end
@@ -181,23 +195,25 @@ end
 
 -- --- value formatting / changed detection -------------------------------
 
--- Display value with a visual hint for the field kind:
---   text/number:  "[ value ]"
---   enum:         "< value >"    (click / enter cycles)
---   peripheral:   "[ value ] v"  (click / enter opens picker)
---
--- The brackets are the "form field" indicator — consistent across kinds
--- so the user sees every row as something they can click into.
+-- String shown inside the pill for a given field value. Kind-aware:
+-- peripherals default to "auto" instead of empty; enums and text/number
+-- just stringify the current value. No surrounding brackets or arrows —
+-- the coloured pill background carries the "interactive" affordance.
 local function value_text(field, v)
-    if field.kind == "enum" then
-        return "< " .. tostring(v == nil and "" or v) .. " >"
-    elseif field.kind == "peripheral" then
-        return "[ " .. (v == nil and "auto" or tostring(v)) .. " ] v"
-    else
-        -- text / number
-        local shown = (v == nil) and "" or tostring(v)
-        return "[ " .. shown .. " ]"
+    if field.kind == "peripheral" then
+        return (v == nil) and "auto" or tostring(v)
     end
+    if v == nil or v == "" then return "(unset)" end
+    return tostring(v)
+end
+
+-- Pick pill colours for a value given row state. `changed` overrides the
+-- normal colouring when the row is NOT selected so the user can see at
+-- a glance which fields differ from defaults.
+local function pill_colors(selected, changed)
+    if selected then return T.pill_sel_bg, T.pill_sel_fg end
+    if changed  then return T.pill_changed_bg, T.pill_changed_fg end
+    return T.pill_bg, T.pill_fg
 end
 
 local function default_for(page, field)
@@ -219,17 +235,18 @@ end
 local function inline_edit_text(y, x_start, w_budget, current, is_number)
     local buf = tostring(current == nil and "" or current)
     local cursor = #buf + 1
-    local max_text = math.max(3, w_budget - 2)  -- room for "[" and "]"
+    -- Pill has 1 col of padding on each side; the inner text area fits the
+    -- remaining budget.
+    local max_text = math.max(3, w_budget - 2)
 
     local function render_box()
         term.setCursorPos(x_start, y)
-        set_bg(T.changed); set_fg(colors.black)
-        local display = buf
+        set_bg(T.pill_changed_bg); set_fg(T.pill_changed_fg)
         -- Horizontal scroll: keep cursor visible within max_text cols.
         local win_start = 1
         if cursor > max_text then win_start = cursor - max_text + 1 end
-        display = display:sub(win_start, win_start + max_text - 1)
-        term.write("[" .. display .. string.rep(" ", max_text - #display) .. "]")
+        local display = buf:sub(win_start, win_start + max_text - 1)
+        term.write(" " .. display .. string.rep(" ", max_text - #display) .. " ")
         -- Position the blinking cursor just after the typed content.
         local cx = x_start + 1 + (cursor - win_start)
         term.setCursorPos(math.min(cx, x_start + 1 + max_text), y)
@@ -318,7 +335,7 @@ local function pick_peripheral(label, current, ptype)
             end
         end
 
-        draw_footer_bar(" \24\25  navigate     enter pick     esc cancel")
+        draw_footer_bar(" \24\25 navigate  |  enter pick  |  esc cancel")
 
         local _, key = os.pullEvent("key")
         if     key == keys.up   and sel > 1       then sel = sel - 1
@@ -367,20 +384,22 @@ local function draw_button_strip(page_idx, total_pages)
     b.action = "next"; buttons[#buttons + 1] = b
 
     -- Right side: cancel always; save only on the last page (wizard flow —
-    -- you can only finish from the end).
+    -- you can only finish from the end). Button labels are clean verbs;
+    -- keyboard shortcuts are documented in the help panel / docs and work
+    -- silently so we don't clutter the labels with "(s)" / "(q)".
     local on_last = (page_idx >= total_pages)
-    local save_text = "[ save (s) ]"
-    local cancel_text = "[ cancel (q) ]"
+    local save_text   = "[ save ]"
+    local cancel_text = "[ cancel ]"
     local right_width = #cancel_text + (on_last and (#save_text + 1) or 0)
     local right_start = w - right_width - 1
 
     if right_start > x + 2 then
         if on_last then
-            b = draw_button(right_start, h, "save (s)", colors.lime, colors.black, false)
+            b = draw_button(right_start, h, "save", colors.lime, colors.black, false)
             b.action = "save"; buttons[#buttons + 1] = b
             right_start = right_start + b.w + 1
         end
-        b = draw_button(right_start, h, "cancel (q)", colors.red, colors.black, false)
+        b = draw_button(right_start, h, "cancel", colors.red, colors.black, false)
         b.action = "cancel"; buttons[#buttons + 1] = b
     end
 
@@ -400,29 +419,34 @@ local function draw_page(page, page_idx, total_pages, all_cfg, sel_field_idx)
 
     local rows_y = 5
     local label_w = 18
-    local field_geom = {}  -- i -> { y, x_value, w_budget }
+    local field_geom = {}  -- i -> { y, x_value, w_budget, pill_w }
     for i, field in ipairs(page.fields) do
         local y = rows_y + i - 1
         if y >= h - 5 then break end
-        local current = page.get(all_cfg, field.key)
+        local current  = page.get(all_cfg, field.key)
         local selected = (i == sel_field_idx)
-        local bg = selected and T.sel_bg or T.bg
-        local fg = selected and T.sel_fg or T.fg
-        fill_line(y, bg)
+        local changed  = is_changed(page, field, current)
+        local row_bg   = selected and T.sel_bg or T.bg
+        local row_fg   = selected and T.sel_fg or T.fg
+        fill_line(y, row_bg)
         if selected then write_at(2, y, "\16", T.sel_fg, T.sel_bg) end
 
-        write_at(4, y, util.pad(field.label, label_w), fg, bg)
+        write_at(4, y, util.pad(field.label, label_w), row_fg, row_bg)
 
-        local x_value = 4 + label_w
-        local w_budget = w - x_value - 2
-        field_geom[i] = { y = y, x_value = x_value, w_budget = w_budget }
+        -- Draw the value pill: a coloured box with a single leading + trailing
+        -- space of padding. Pill width adapts to the text but is bounded by
+        -- the remaining row budget.
+        local x_value   = 4 + label_w
+        local w_budget  = w - x_value - 2
+        local vtext     = value_text(field, current)
+        local shown     = util.truncate(vtext, math.max(1, w_budget - 2))
+        local pill_w    = #shown + 2  -- leading + trailing space
+        local pill_bg, pill_fg = pill_colors(selected, changed)
+        write_at(x_value, y, " " .. shown .. " ", pill_fg, pill_bg)
+        -- Restore the row's background for anything drawn after the pill.
+        set_bg(row_bg); set_fg(row_fg)
 
-        local vtext = value_text(field, current)
-        local value_fg = fg
-        if not selected and is_changed(page, field, current) then
-            value_fg = T.changed
-        end
-        write_at(x_value, y, util.truncate(vtext, w_budget), value_fg, bg)
+        field_geom[i] = { y = y, x_value = x_value, w_budget = w_budget, pill_w = pill_w }
     end
 
     -- Detail panel with help for the currently-selected field.

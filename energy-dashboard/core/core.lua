@@ -15,7 +15,7 @@ local util      = require("common.util")
 local configlib = require("common.config")
 local status    = require("common.status")
 
-local COMPONENT_VERSION = "0.5.0"
+local COMPONENT_VERSION = "0.6.0"
 
 -- First-run wizard: auto-launch `configure` on first boot so intervals,
 -- state-file path, and log-file path can be adjusted before anything
@@ -81,12 +81,25 @@ local lifetime = {
 -- Network-wide rollup rings used to feed the panel's chart. Snapshotted
 -- once per broadcast from the aggregated network_stored value, so every
 -- panel gets the same series without recomputing per-collector totals.
--- s1: 5 min @ 1s, m1: 1 hour @ 1m, m5: 24 h @ 5m.
+--
+--   s1: 5 min @ 1s      (fine detail for short windows)
+--   m1: 1 hour @ 1m
+--   m5: 24 h @ 5m
+--   h1: 7 days @ 1h
+--   h6: 30 days @ 6h
+--
+-- Longer tiers ship with timestamps so panels can render hole-tolerant
+-- charts (server downtime / crashes leave gaps that the panel can show
+-- as empty columns instead of compressing the time axis).
 local net_history_s1 = util.ring(300)
 local net_history_m1 = util.ring(60)
 local net_history_m5 = util.ring(288)
+local net_history_h1 = util.ring(168)
+local net_history_h6 = util.ring(120)
 local net_samples_since_1m = 0
 local net_samples_since_5m = 0
+local net_samples_since_1h = 0
+local net_samples_since_6h = 0
 
 -- --- disk persistence ----------------------------------------------------
 
@@ -255,42 +268,62 @@ end
 
 -- --- network history snapshot -------------------------------------------
 
+-- Helper: average the .stored field over the first `n` entries of a ring
+-- (newest-first, as per Ring:at semantics).
+local function ring_recent_mean(ring, n)
+    local sum, count = 0, 0
+    for i = 1, math.min(n, ring:len()) do
+        local s = ring:at(i)
+        if s then sum = sum + s.stored; count = count + 1 end
+    end
+    if count == 0 then return nil end
+    return sum / count
+end
+
 local function push_network_sample(stored, now_ms)
     net_history_s1:push({ ts = now_ms, stored = stored })
+
     net_samples_since_1m = net_samples_since_1m + 1
     if net_samples_since_1m >= 60 then
-        -- mean of the last 60 one-second samples
-        local sum, count = 0, 0
-        for i = 1, math.min(60, net_history_s1:len()) do
-            local s = net_history_s1:at(i)
-            if s then sum = sum + s.stored; count = count + 1 end
-        end
-        if count > 0 then
-            net_history_m1:push({ ts = now_ms, stored = sum / count })
-        end
+        local v = ring_recent_mean(net_history_s1, 60)
+        if v then net_history_m1:push({ ts = now_ms, stored = v }) end
         net_samples_since_1m = 0
         net_samples_since_5m = net_samples_since_5m + 1
     end
+
     if net_samples_since_5m >= 5 then
-        local sum, count = 0, 0
-        for i = 1, math.min(5, net_history_m1:len()) do
-            local s = net_history_m1:at(i)
-            if s then sum = sum + s.stored; count = count + 1 end
-        end
-        if count > 0 then
-            net_history_m5:push({ ts = now_ms, stored = sum / count })
-        end
+        local v = ring_recent_mean(net_history_m1, 5)
+        if v then net_history_m5:push({ ts = now_ms, stored = v }) end
         net_samples_since_5m = 0
+        net_samples_since_1h = net_samples_since_1h + 1
+    end
+
+    -- 12 × 5m = 1 hour
+    if net_samples_since_1h >= 12 then
+        local v = ring_recent_mean(net_history_m5, 12)
+        if v then net_history_h1:push({ ts = now_ms, stored = v }) end
+        net_samples_since_1h = 0
+        net_samples_since_6h = net_samples_since_6h + 1
+    end
+
+    -- 6 × 1h = 6 hours
+    if net_samples_since_6h >= 6 then
+        local v = ring_recent_mean(net_history_h1, 6)
+        if v then net_history_h6:push({ ts = now_ms, stored = v }) end
+        net_samples_since_6h = 0
     end
 end
 
--- Flatten a ring into {values=..., ts=..., interval_ms=...} (oldest->newest)
--- so rednet serialisation is compact and the panel can index by position.
-local function serialize_ring(ring, interval_ms)
-    local values, ts_arr = {}, {}
+-- Flatten a ring for the wire. `with_ts` ships per-sample timestamps so
+-- the panel can render hole-tolerant charts across server restarts; for
+-- short-window tiers (s1, m1) we drop them and rely on interval_ms to
+-- keep the packet small.
+local function serialize_ring(ring, interval_ms, with_ts)
+    local values, ts_arr = {}, nil
+    if with_ts then ts_arr = {} end
     for s in ring:iter() do
         values[#values + 1] = s.stored
-        ts_arr[#ts_arr + 1] = s.ts
+        if with_ts then ts_arr[#ts_arr + 1] = s.ts end
     end
     return { interval_ms = interval_ms, values = values, ts = ts_arr }
 end
@@ -479,9 +512,11 @@ local function broadcast_aggregate()
     -- duplicating the history themselves.
     push_network_sample(payload.network_stored or 0, now_ms)
     payload.history = {
-        s1 = serialize_ring(net_history_s1, 1000),
-        m1 = serialize_ring(net_history_m1, 60 * 1000),
-        m5 = serialize_ring(net_history_m5, 5 * 60 * 1000),
+        s1 = serialize_ring(net_history_s1,             1000, false),
+        m1 = serialize_ring(net_history_m1,        60 * 1000, false),
+        m5 = serialize_ring(net_history_m5,    5 * 60 * 1000, true),
+        h1 = serialize_ring(net_history_h1,   60 * 60 * 1000, true),
+        h6 = serialize_ring(net_history_h6, 6 * 60 * 60 * 1000, true),
     }
 
     local pkt = comms.packet(comms.KIND.CORE_AGGREGATE, comms.ROLE.CORE, payload)

@@ -113,4 +113,133 @@ function M.column_chart(mon, x, y, w, h, values, opts)
     return s
 end
 
+-- Draw a signed column chart of `values` at (x,y) over a box w×h. Used
+-- for rate series where values may be positive or negative. A zero line
+-- is drawn across the baseline row: positive values fill UP from there,
+-- negative values fill DOWN. The y-axis auto-scales so both extremes are
+-- visible; the baseline is positioned to keep the larger side from
+-- clipping.
+--
+-- opts.timestamps     : parallel array of wall-clock ms. When present the
+--                       x-axis maps by timestamp, leaving gaps for server
+--                       downtime or missing samples (hole-tolerant mode).
+-- opts.window_ms      : width of the x-axis in ms (required when
+--                       timestamps given). x = 0 maps to newest-window_ms,
+--                       x = w-1 maps to newest timestamp.
+-- opts.pos_color      : colour for positive bars
+-- opts.neg_color      : colour for negative bars
+-- opts.zero_color     : colour of the baseline row (empty/no-data cells)
+-- opts.bg             : colour to clear the box to first
+--
+-- Returns the stats table (nil if no values).
+function M.signed_chart(mon, x, y, w, h, values, opts)
+    opts = opts or {}
+    local pos_color  = opts.pos_color  or colors.lime
+    local neg_color  = opts.neg_color  or colors.orange
+    local zero_color = opts.zero_color or colors.gray
+    local bg         = opts.bg         or colors.black
+
+    -- Clear the box first so gaps in time-based mode look clean.
+    local blank = string.rep(" ", w)
+    mon.setBackgroundColor(bg)
+    for r = 0, h - 1 do
+        mon.setCursorPos(x, y + r)
+        mon.write(blank)
+    end
+
+    if not values or #values == 0 then return nil end
+    local s = stats(values)
+
+    -- Decide baseline row. Keep a proportional split when both signs are
+    -- present; stay at bottom/top for single-sign series.
+    local vmax = math.max(s.max, 0)
+    local vmin = math.min(s.min, 0)
+    local span = vmax - vmin
+    if span <= 0 then span = 1 end
+
+    local baseline_row  -- 0-indexed row from top
+    local up_rows, down_rows
+    if s.min >= 0 then
+        baseline_row = h - 1
+        up_rows = h
+        down_rows = 0
+    elseif s.max <= 0 then
+        baseline_row = 0
+        up_rows = 0
+        down_rows = h
+    else
+        local frac_up = vmax / span
+        up_rows   = math.max(1, math.min(h - 1, math.floor(frac_up * h + 0.5)))
+        down_rows = h - up_rows
+        baseline_row = up_rows - 1  -- the row where zero sits
+    end
+
+    -- Per-column decision: pick a sample (by index or by time), compute
+    -- fill height in up/down direction, render.
+    local n = #values
+    local timestamps = opts.timestamps
+    local use_time   = timestamps and opts.window_ms and #timestamps == n
+
+    local newest_ts
+    if use_time then newest_ts = timestamps[n] end
+
+    for col = 0, w - 1 do
+        local v, has_sample
+        if use_time then
+            -- Each column represents a time bucket of window_ms / w. Pick the
+            -- sample whose timestamp falls within that bucket; leave the
+            -- column blank if no sample lands in it (= a "hole").
+            local bucket_end   = newest_ts - (w - 1 - col)     * (opts.window_ms / w)
+            local bucket_start = bucket_end - (opts.window_ms / w)
+            local best_v, best_d
+            for i = 1, n do
+                local t = timestamps[i]
+                if t and t >= bucket_start and t <= bucket_end then
+                    local center = (bucket_start + bucket_end) / 2
+                    local d = math.abs(t - center)
+                    if not best_d or d < best_d then best_v = values[i]; best_d = d end
+                end
+            end
+            v = best_v
+            has_sample = v ~= nil
+        else
+            local src
+            if n == 1 then src = 1
+            else src = math.floor(col * (n - 1) / (w - 1) + 0.5) + 1 end
+            if src < 1 then src = 1 end
+            if src > n then src = n end
+            v = values[src]
+            has_sample = true
+        end
+
+        -- Baseline cell (zero line): always drawn.
+        mon.setBackgroundColor(zero_color)
+        mon.setCursorPos(x + col, y + baseline_row)
+        mon.write(" ")
+
+        if has_sample and v ~= nil then
+            if v > 0 and up_rows > 0 then
+                local filled = math.max(1, math.floor(v / vmax * (up_rows - 0) + 0.5))
+                if filled > up_rows then filled = up_rows end
+                mon.setBackgroundColor(pos_color)
+                for r = 1, filled do
+                    mon.setCursorPos(x + col, y + baseline_row - r)
+                    mon.write(" ")
+                end
+            elseif v < 0 and down_rows > 0 then
+                local filled = math.max(1, math.floor(-v / -vmin * (down_rows - 0) + 0.5))
+                if filled > down_rows then filled = down_rows end
+                mon.setBackgroundColor(neg_color)
+                for r = 1, filled do
+                    mon.setCursorPos(x + col, y + baseline_row + r)
+                    mon.write(" ")
+                end
+            end
+        end
+    end
+
+    mon.setBackgroundColor(bg)
+    return s
+end
+
 return M

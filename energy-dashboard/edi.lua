@@ -857,13 +857,13 @@ local function quit_prompt()
 
     local btn_y = 10
     local btns = {}
-    local b = draw_pill(2, btn_y, "reboot now (enter)", colors.lime, colors.black, false)
+    local b = draw_pill(2, btn_y, "reboot now", colors.lime, colors.black, false)
     b.action = "reboot"; btns[#btns + 1] = b
     b = draw_pill(2 + b.w + 2, btn_y, "quit only", colors.gray, colors.white, false)
     b.action = "quit"; btns[#btns + 1] = b
     set_bg(T.bg); set_fg(T.fg)
 
-    draw_footer_bar(" enter reboot  |  q / esc  quit without rebooting  |  click a button")
+    draw_footer_bar(" click a button, or enter / esc")
 
     while true do
         local event, p1, p2, p3 = os.pullEvent()

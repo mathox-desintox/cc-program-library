@@ -16,7 +16,7 @@ local themes    = require("graphics.themes")
 local configlib = require("common.config")
 local status    = require("common.status")
 
-local COMPONENT_VERSION = "0.5.0"
+local COMPONENT_VERSION = "0.6.0"
 
 -- First-run wizard: auto-launch `configure` on first boot so the user
 -- picks which monitor + rate unit they want before we start drawing.
@@ -45,14 +45,23 @@ comms.set_network_id(NETWORK_ID)
 -- Each entry picks a tier from the aggregate's history and how many of
 -- its newest samples to keep for the chart + stats. `window_s` is the
 -- wall-clock span that window represents; used for rate calculations.
+-- `min_samples` is the threshold below which we show a "need more data"
+-- message instead of a chart.
 local HORIZONS = {
-    { key = "m1",  label = "1m",  tier = "s1", count = 60,  window_s =       60 },
-    { key = "m5",  label = "5m",  tier = "s1", count = 300, window_s =    5*60 },
-    { key = "m15", label = "15m", tier = "m1", count = 15,  window_s =   15*60 },
-    { key = "h1",  label = "1h",  tier = "m1", count = 60,  window_s =   60*60 },
-    { key = "h8",  label = "8h",  tier = "m5", count = 96,  window_s = 8*60*60 },
-    { key = "h24", label = "24h", tier = "m5", count = 288, window_s =24*60*60 },
+    { key = "m1",  label = "1m",  tier = "s1", count = 60,  window_s =        60, min_samples = 5  },
+    { key = "m5",  label = "5m",  tier = "s1", count = 300, window_s =     5*60, min_samples = 10 },
+    { key = "m15", label = "15m", tier = "m1", count = 15,  window_s =    15*60, min_samples = 3  },
+    { key = "h1",  label = "1h",  tier = "m1", count = 60,  window_s =    60*60, min_samples = 5  },
+    { key = "h8",  label = "8h",  tier = "m5", count = 96,  window_s =  8*60*60, min_samples = 5  },
+    { key = "h24", label = "24h", tier = "m5", count = 288, window_s = 24*60*60, min_samples = 5  },
+    { key = "d7",  label = "7d",  tier = "h1", count = 168, window_s = 7*24*60*60,  min_samples = 3 },
+    { key = "d30", label = "30d", tier = "h6", count = 120, window_s = 30*24*60*60, min_samples = 3 },
 }
+
+-- Horizons at or above this key use timestamp-based hole-tolerant
+-- rendering: server restarts / crashes leave gaps in the chart rather
+-- than compressing the time axis.
+local HOLE_TOLERANT = { h8 = true, h24 = true, d7 = true, d30 = true }
 
 local function horizon_by_key(k)
     for _, h in ipairs(HORIZONS) do if h.key == k then return h end end
@@ -86,37 +95,56 @@ end
 
 -- --- rendering -----------------------------------------------------------
 
--- Take the newest `count` values from a serialized tier (oldest->newest).
-local function tail_values(tier, count)
-    if not tier or not tier.values then return {} end
+-- Take the newest `count` entries from a serialized tier. Returns two
+-- parallel arrays (values, timestamps) in oldest->newest order. The
+-- timestamps array is reconstructed from interval_ms when the core
+-- didn't ship per-sample ts (short horizons).
+local function tail_series(tier, count)
+    if not tier or not tier.values then return {}, {} end
     local src = tier.values
     local n = #src
-    if n == 0 then return {} end
-    if count >= n then return src end
-    local out = {}
-    local start = n - count + 1
-    for i = start, n do out[#out + 1] = src[i] end
-    return out
+    if n == 0 then return {}, {} end
+    local lo = math.max(1, n - count + 1)
+
+    local values, ts = {}, {}
+    for i = lo, n do values[#values + 1] = src[i] end
+
+    local interval = tier.interval_ms or 1000
+    if tier.ts then
+        for i = lo, n do ts[#ts + 1] = tier.ts[i] end
+    else
+        -- Reconstruct ts from a synthetic newest = now. We only use this
+        -- to ORDER samples; absolute values don't matter for rendering.
+        local now_ms = os.epoch("utc")
+        for i = lo, n do ts[#ts + 1] = now_ms - (n - i) * interval end
+    end
+    return values, ts
 end
 
--- Rate in FE/s over the horizon: newest minus oldest of the window divided
--- by the elapsed seconds between them. Falls back to sample-count times
--- interval when timestamps are missing.
-local function rate_over(tier, count)
-    if not tier or not tier.values or #tier.values < 2 then return 0 end
-    local vs = tier.values
-    local n  = #vs
-    local lo = math.max(1, n - count + 1)
-    local first, last = vs[lo], vs[n]
-    local dt_s
-    if tier.ts and tier.ts[lo] and tier.ts[n] then
-        dt_s = (tier.ts[n] - tier.ts[lo]) / 1000
+-- Convert a stored-over-time series into a rate series in FE/s. Returns
+-- (rates, rate_ts), each element aligned to the NEW end of a time pair.
+-- If two samples are ≥ gap_ms apart we drop the pair entirely so server
+-- downtime doesn't produce a spurious "flat" rate across the gap.
+local function stored_to_rates(values, ts, interval_ms)
+    local rates, rate_ts = {}, {}
+    local gap_ms = (interval_ms or 1000) * 3  -- anything larger is a hole
+    for i = 2, #values do
+        local dt_ms = ts[i] - ts[i - 1]
+        if dt_ms > 0 and dt_ms <= gap_ms then
+            rates[#rates + 1]   = (values[i] - values[i - 1]) / (dt_ms / 1000)
+            rate_ts[#rate_ts + 1] = ts[i]
+        end
     end
-    if not dt_s or dt_s <= 0 then
-        dt_s = (n - lo) * ((tier.interval_ms or 1000) / 1000)
-    end
+    return rates, rate_ts
+end
+
+-- Rate in FE/s across the whole window: prefer endpoint-based (more
+-- accurate across any gaps) falling back to the last computed rate.
+local function window_rate(values, ts)
+    if #values < 2 then return 0 end
+    local dt_s = (ts[#ts] - ts[1]) / 1000
     if dt_s <= 0 then return 0 end
-    return (last - first) / dt_s
+    return (values[#values] - values[1]) / dt_s
 end
 
 -- Build a tab strip starting at x,y. Returns {rects, width} so the
@@ -165,13 +193,14 @@ local function render(mon)
     tab_layout = draw_tabs(mon, 2, 7, selected_horizon)
     local hz = horizon_by_key(selected_horizon)
 
-    -- Collect the window values for the selected horizon.
+    -- Load the selected horizon's tier, convert stored samples to rates.
     local tier = (agg.history or {})[hz.tier]
-    local values = tail_values(tier, hz.count)
+    local stored_vals, stored_ts = tail_series(tier, hz.count)
+    local rates, rate_ts = stored_to_rates(stored_vals, stored_ts, tier and tier.interval_ms)
 
     -- Reserve footer lines; whatever is left between row 8 and the footer
     -- is split between chart and stats.
-    local foot_lines = 4           -- fill bar (1) + % (0, inline) + 2 footer lines
+    local foot_lines = 4           -- fill bar (1) + 2 footer lines
     local stats_lines = 4          -- rate / high / low / vol / ETA on up to 4 rows
     local chart_top = 9
     local chart_bot = h - foot_lines - stats_lines - 1
@@ -180,28 +209,51 @@ local function render(mon)
     local chart_x, chart_w = 2, w - 2
 
     local s
-    if #values >= 2 then
-        s = chart.column_chart(mon, chart_x, chart_top, chart_w, chart_h, values, {
-            bar_color   = THEME.bar_mid,
-            empty_color = THEME.bar_empty,
-            bg          = THEME.bg,
-        })
+    local have_enough = #rates >= (hz.min_samples or 2)
+    if have_enough then
+        local opts = {
+            pos_color  = THEME.charging,
+            neg_color  = THEME.draining,
+            zero_color = THEME.bar_empty,
+            bg         = THEME.bg,
+        }
+        if HOLE_TOLERANT[hz.key] then
+            opts.timestamps = rate_ts
+            opts.window_ms  = hz.window_s * 1000
+        end
+        s = chart.signed_chart(mon, chart_x, chart_top, chart_w, chart_h, rates, opts)
     else
-        gfx.write(mon, chart_x, chart_top + math.floor(chart_h / 2),
-                  "gathering samples (" .. hz.label .. " window)...", P.label)
+        -- "Need more data" panel. Shows how much has been collected vs. the
+        -- minimum threshold so the user knows whether to wait or switch tabs.
+        local have  = #rates
+        local need  = hz.min_samples or 2
+        local line1 = string.format("Need more data for the %s window.", hz.label)
+        local line2 = string.format("collected %d / %d samples so far", have, need)
+        local line3
+        if hz.tier == "h1" or hz.tier == "h6" or hz.tier == "m5" then
+            line3 = "longer horizons build up slowly; keep the core running."
+        else
+            line3 = "waiting for the core to fill the history buffer..."
+        end
+        local mid = chart_top + math.floor(chart_h / 2) - 1
+        gfx.write(mon, chart_x, mid,     line1, P.warn)
+        gfx.write(mon, chart_x, mid + 1, line2, P.label)
+        gfx.write(mon, chart_x, mid + 2, line3, P.label)
     end
 
     -- Stats block below the chart.
     local row = chart_bot + 2
-    if s then
-        local rate_s   = rate_over(tier, hz.count)
+    if have_enough and s then
+        local rate_s   = window_rate(stored_vals, stored_ts)
         local vol_pct  = (s.mean ~= 0) and (s.stdev / math.abs(s.mean) * 100) or 0
         local col2     = 2 + math.floor(w / 2)
         gfx.indicator(mon, 2,    row, "rate",  6, util.fmtRate(rate_s, RATE_UNIT), P.label, rate_color(rate_s))
         gfx.indicator(mon, col2, row, "vol",   5, string.format("%.2f%%", vol_pct),  P.label, P.value)
         row = row + 1
-        gfx.indicator(mon, 2,    row, "high",  6, util.fmtFE(s.max),                P.label, P.ok)
-        gfx.indicator(mon, col2, row, "low",   5, util.fmtFE(s.min),                P.label, P.warn)
+        -- High/low of the RATE series for this window (charging peak /
+        -- deepest draw). Labels gain a +/- prefix so the axis is obvious.
+        gfx.indicator(mon, 2,    row, "peak+", 6, util.fmtRate(s.max, RATE_UNIT),   P.label, P.ok)
+        gfx.indicator(mon, col2, row, "peak-", 5, util.fmtRate(s.min, RATE_UNIT),   P.label, P.warn)
         row = row + 1
         local eta_text = "idle"
         if agg.eta_to_full_s       then eta_text = "to full: "  .. util.fmtDuration(agg.eta_to_full_s)
