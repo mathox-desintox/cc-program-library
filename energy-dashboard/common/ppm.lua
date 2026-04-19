@@ -49,7 +49,7 @@ function M.call(device, method, ...)
 end
 
 -- Is a previously-wrapped peripheral still attached? We check by seeing if
--- its name is still in peripheral.getNames() — this catches the common case
+-- its name is still in peripheral.getNames() - this catches the common case
 -- of the block being broken or the modem yanked.
 function M.is_live(name)
     if not name then return false end

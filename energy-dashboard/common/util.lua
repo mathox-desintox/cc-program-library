@@ -7,7 +7,7 @@ local M = {}
 -- SI-prefixed FE formatter. Uses doubles (precision degrades by ~9 FE at
 -- 40 PFE, imperceptible for display; use String variants for exactness).
 function M.fmtFE(v)
-    if not v or v ~= v then return "—" end
+    if not v or v ~= v then return "-" end
     local a = math.abs(v)
     local units = { "FE", "kFE", "MFE", "GFE", "TFE", "PFE", "EFE" }
     local i = 1
@@ -23,7 +23,7 @@ end
 -- Signed rate. Argument is always FE/s; unit ("t" or "s") controls display.
 -- 20 MC ticks per real-time second.
 function M.fmtRate(ratePerSecond, unit)
-    if not ratePerSecond or ratePerSecond ~= ratePerSecond then return "—" end
+    if not ratePerSecond or ratePerSecond ~= ratePerSecond then return "-" end
     unit = unit or "t"
     local display, suffix
     if unit == "t" then
@@ -36,9 +36,9 @@ function M.fmtRate(ratePerSecond, unit)
 end
 
 function M.fmtDuration(seconds)
-    if not seconds or seconds ~= seconds or seconds == math.huge then return "—" end
+    if not seconds or seconds ~= seconds or seconds == math.huge then return "-" end
     seconds = math.floor(seconds)
-    if seconds < 0     then return "—" end
+    if seconds < 0     then return "-" end
     if seconds < 60    then return string.format("%ds", seconds) end
     if seconds < 3600  then return string.format("%dm %ds", seconds / 60, seconds % 60) end
     if seconds < 86400 then return string.format("%dh %dm", seconds / 3600, (seconds % 3600) / 60) end
@@ -52,10 +52,10 @@ function M.clamp(v, lo, hi)
     return v
 end
 
--- ─── string helpers ────────────────────────────────────────────────────
+-- --- string helpers ----------------------------------------------------
 
 -- Word-wrap `text` to fit within `width` columns. Returns array of lines.
--- Words longer than `width` are placed alone on a line (and overflow — we
+-- Words longer than `width` are placed alone on a line (and overflow - we
 -- don't hyphenate). A nil/empty input returns {}.
 function M.wrap(text, width)
     if not text or text == "" or width < 1 then return {} end
@@ -100,7 +100,7 @@ function M.pad(s, w, align)
     return s .. string.rep(" ", gap)
 end
 
--- ─── ring buffer ───────────────────────────────────────────────────────
+-- --- ring buffer -------------------------------------------------------
 
 -- Fixed-capacity ring that overwrites oldest on push once full.
 -- Indices are 1 = newest, 2 = next, ..., len() = oldest.
@@ -136,7 +136,7 @@ end
 function Ring:first() return self:at(1) end
 function Ring:last()  return self:at(self.n) end
 
--- Iterate oldest → newest.
+-- Iterate oldest -> newest.
 function Ring:iter()
     local i = self.n + 1
     return function()

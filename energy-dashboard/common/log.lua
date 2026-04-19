@@ -29,7 +29,7 @@ function M.init(component, threshold, file)
 end
 
 -- Enable this when a status canvas owns the terminal. Log still writes to
--- the file (if configured) so you get a full trace — the terminal just
+-- the file (if configured) so you get a full trace - the terminal just
 -- isn't clobbered by stray prints.
 function M.silence_terminal(b) _silent = b and true or false end
 
@@ -38,7 +38,7 @@ local function emit(level, msg)
     local ts = textutils.formatTime(os.time(), true)
     local line = string.format("[%s] %s %s: %s", ts, NAME[level], _component, tostring(msg))
 
-    -- terminal (coloured) — suppressed when a status canvas owns the terminal
+    -- terminal (coloured) - suppressed when a status canvas owns the terminal
     if not _silent then
         local prev_fg = term.getTextColor and term.getTextColor() or colors.white
         if term.setTextColor then term.setTextColor(COLOR[level] or colors.white) end

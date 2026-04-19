@@ -10,7 +10,7 @@
 local config = require("common.config")
 local util   = require("common.util")
 
--- ─── theme ──────────────────────────────────────────────────────────────
+-- --- theme --------------------------------------------------------------
 
 local has_color = term.isColor and term.isColor()
 local T = {
@@ -41,7 +41,7 @@ local T = {
 local function set_fg(c) if has_color then term.setTextColor(c) end end
 local function set_bg(c) if has_color then term.setBackgroundColor(c) end end
 
--- ─── render primitives ──────────────────────────────────────────────────
+-- --- render primitives --------------------------------------------------
 
 local function screen_wh() return term.getSize() end
 
@@ -82,15 +82,15 @@ end
 local function draw_section(y, text)
     local w = screen_wh()
     fill_line(y, T.bg)
-    write_at(2, y, "\140\140 ", T.section, T.bg)
+    write_at(2, y, "-- ", T.section, T.bg)
     write_at(5, y, text, T.section, T.bg)
     local trail_x = 5 + #text + 1
     if trail_x < w - 1 then
-        write_at(trail_x, y, " " .. string.rep("\140", w - trail_x - 1), T.section, T.bg)
+        write_at(trail_x, y, " " .. string.rep("-", w - trail_x - 1), T.section, T.bg)
     end
 end
 
--- ─── menu item model ────────────────────────────────────────────────────
+-- --- menu item model ----------------------------------------------------
 -- Each row is either a selectable action/entry, a section header, or a spacer.
 --   action row: { key, label, value, kind, options?, ptype?, default? }
 --       kind = "text" | "number" | "enum" | "peripheral" | "action"
@@ -136,7 +136,7 @@ local function draw_entry(y, it, selected)
     end
 end
 
--- ─── arrow-key menu ─────────────────────────────────────────────────────
+-- --- arrow-key menu -----------------------------------------------------
 
 local function first_selectable(items)
     for i, it in ipairs(items) do if is_selectable(it) then return i end end
@@ -161,7 +161,7 @@ local function arrow_menu(items, title, right_text, footer_text)
             if items[idx] then draw_entry(start_y + i - 1, items[idx], idx == sel) end
         end
 
-        draw_footer_bar(footer_text or " \24\25  navigate     \30  select     q  back")
+        draw_footer_bar(footer_text or " \24\25  navigate     enter select     q  back")
 
         local _, key = os.pullEvent("key")
         if key == keys.up then
@@ -177,7 +177,7 @@ local function arrow_menu(items, title, right_text, footer_text)
     end
 end
 
--- ─── value prompts ──────────────────────────────────────────────────────
+-- --- value prompts ------------------------------------------------------
 
 local function edit_screen_header(label, current)
     clear_screen()
@@ -205,7 +205,7 @@ local function prompt_number(label, current)
     local n = tonumber(v)
     if not n then
         fill_line(9, T.bg)
-        write_at(2, 9, "not a number — keeping current", T.err, T.bg)
+        write_at(2, 9, "not a number - keeping current", T.err, T.bg)
         sleep(1.2)
         return current
     end
@@ -225,7 +225,7 @@ local function prompt_enum(label, current, options)
     items[#items + 1] = { label = "[cancel]", tag = "[cancel]", tag_color = T.back, cancel = true }
     local sel = arrow_menu(items, "Edit: " .. label,
         "current: " .. tostring(current),
-        " \24\25  navigate     \30  pick     q  cancel")
+        " \24\25  navigate     enter pick     q  cancel")
     if not sel or sel.cancel then return current end
     return sel.enum_value
 end
@@ -258,14 +258,14 @@ local function prompt_peripheral(label, current, ptype)
 
     local sel = arrow_menu(items, "Edit: " .. label,
         "current: " .. tostring(current or "auto"),
-        " \24\25  navigate     \30  pick     q  cancel")
+        " \24\25  navigate     enter pick     q  cancel")
     if not sel or sel.cancel then return current end
     if sel.periph_auto then return nil end
     if sel.periph_name then return sel.periph_name end
     return current
 end
 
--- ─── component editors ──────────────────────────────────────────────────
+-- --- component editors --------------------------------------------------
 
 -- Builds the rows for a given component. `cfg_section` is the live (mutable)
 -- config table for that component; `defaults_section` is the default table,
@@ -355,7 +355,7 @@ local function edit_component(name, cfg_section, defaults_section)
         items[#items + 1] = { label = "[back]", tag = "[back]", tag_color = T.back, back = true }
 
         local sel = arrow_menu(items, "Configure " .. name, nil,
-            " \24\25  navigate     \30  edit     q  back")
+            " \24\25  navigate     enter edit     q  back")
         if not sel or sel.back then return end
         if     sel.kind == "text"       then cfg_section[sel.key] = prompt_text(sel.label, cfg_section[sel.key])
         elseif sel.kind == "number"     then cfg_section[sel.key] = prompt_number(sel.label, cfg_section[sel.key])
@@ -365,7 +365,7 @@ local function edit_component(name, cfg_section, defaults_section)
     end
 end
 
--- ─── shared section editor (network_id + future shared keys) ────────────
+-- --- shared section editor (network_id + future shared keys) ------------
 
 local function edit_shared(all_cfg, defaults)
     while true do
@@ -380,13 +380,13 @@ local function edit_shared(all_cfg, defaults)
             { label = "[back]", tag = "[back]", tag_color = T.back, back = true },
         }
         local sel = arrow_menu(items, "Configure shared", nil,
-            " \24\25  navigate     \30  edit     q  back")
+            " \24\25  navigate     enter edit     q  back")
         if not sel or sel.back then return end
         if sel.kind == "text" then all_cfg.network_id = prompt_text(sel.label, all_cfg.network_id) end
     end
 end
 
--- ─── installed-components detection ─────────────────────────────────────
+-- --- installed-components detection -------------------------------------
 
 local function load_edi_state()
     if not fs.exists("/.edi_state") then return { installed = {} } end
@@ -411,7 +411,7 @@ local function installed_components()
     return out
 end
 
--- ─── top-level menu ─────────────────────────────────────────────────────
+-- --- top-level menu -----------------------------------------------------
 
 local function component_summary(name, all_cfg)
     if name == "collector" then
@@ -471,7 +471,7 @@ local function main()
 
         local sel = arrow_menu(items, "Energy Dashboard Configure",
             "network_id=" .. tostring(all_cfg.network_id),
-            " \24\25  navigate     \30  select     q  quit")
+            " \24\25  navigate     enter select     q  quit")
         if not sel then clear_screen(); return end
 
         if sel.kind == "shared" then

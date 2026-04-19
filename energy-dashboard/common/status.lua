@@ -3,7 +3,7 @@
 -- Shared status canvas for collector / core / panel. Each component
 -- builds a `state` table describing itself (title, status pill, grouped
 -- label/value rows, footer) and calls status.render(term, state) from a
--- parallel render loop. Renderer redraws the whole screen each call —
+-- parallel render loop. Renderer redraws the whole screen each call -
 -- cheap on CC:Tweaked, robust against partial-update glitches.
 
 local M = {}
@@ -27,7 +27,7 @@ M.THEME = {
     label        = colors.lightGray,
 }
 
--- ─── primitives ─────────────────────────────────────────────────────────
+-- --- primitives ---------------------------------------------------------
 
 local function wsize(mon) return mon.getSize() end
 
@@ -62,11 +62,11 @@ end
 local function section_line(mon, y, title, w)
     local T = M.THEME
     fill_line(mon, y, T.bg, w)
-    write_at(mon, 2, y, "\140\140 ", T.section, T.bg)
+    write_at(mon, 2, y, "-- ", T.section, T.bg)
     write_at(mon, 5, y, title, T.section, T.bg)
     local trail_x = 5 + #title + 1
     if trail_x < w - 1 then
-        write_at(mon, trail_x, y, " " .. string.rep("\140", w - trail_x - 1), T.section, T.bg)
+        write_at(mon, trail_x, y, " " .. string.rep("-", w - trail_x - 1), T.section, T.bg)
     end
 end
 
@@ -92,7 +92,7 @@ local function bullet_row(mon, x, y, w, label, value, bullet, bullet_color)
     write_at(mon, value_x, y, truncate(tostring(value or ""), max), T.value, T.bg)
 end
 
--- ─── public: render(mon, state) ─────────────────────────────────────────
+-- --- public: render(mon, state) -----------------------------------------
 --
 -- state = {
 --   title     = "collector",
@@ -118,7 +118,7 @@ function M.render(mon, state)
     local T = M.THEME
     local w, h = wsize(mon)
 
-    -- ── title bar ──
+    -- -- title bar --
     mon.setBackgroundColor(T.bg); mon.clear()
     fill_line(mon, 1, T.title_bg, w)
     local title_text = (state.title or "?") .. (state.version and ("  v" .. state.version) or "")
@@ -128,7 +128,7 @@ function M.render(mon, state)
         write_at(mon, rx, 1, state.right_header, T.title_fg, T.title_bg)
     end
 
-    -- ── status pill (row 2, right-aligned) ──
+    -- -- status pill (row 2, right-aligned) --
     fill_line(mon, 2, T.bg, w)
     if state.status and state.status.text then
         local pill = " " .. state.status.text .. " "
@@ -136,7 +136,7 @@ function M.render(mon, state)
             colors.black, state.status.color or T.ok)
     end
 
-    -- ── groups ──
+    -- -- groups --
     local y = 3
     for _, g in ipairs(state.groups or {}) do
         if y >= h - 1 then break end
@@ -154,7 +154,7 @@ function M.render(mon, state)
         if y < h - 1 then fill_line(mon, y, T.bg, w); y = y + 1 end
     end
 
-    -- ── footer ──
+    -- -- footer --
     fill_line(mon, h, T.footer_bg, w)
     if state.footer then
         write_at(mon, 2, h, truncate(state.footer, w - 3), T.footer_fg, T.footer_bg)
@@ -163,7 +163,7 @@ function M.render(mon, state)
     mon.setBackgroundColor(T.bg); mon.setTextColor(T.fg)
 end
 
--- ─── convenience bullet constants ───────────────────────────────────────
+-- --- convenience bullet constants ---------------------------------------
 
 M.BULLET = {
     OK    = { mark = "\7", color = colors.lime    },

@@ -1,5 +1,5 @@
 -- ============================================================
--- edi — Energy Dashboard Installer
+-- edi - Energy Dashboard Installer
 -- ============================================================
 --
 -- Upload this single file to pastebin, then in-game:
@@ -18,7 +18,7 @@ local MANIFEST_URL = "https://raw.githubusercontent.com/mathox-desintox/cc-progr
 local STATE_FILE   = "/.edi_state"
 local STARTUP_FILE = "/startup.lua"
 
--- ─── theme ──────────────────────────────────────────────────────────────
+-- --- theme --------------------------------------------------------------
 
 local has_color = term.isColor and term.isColor()
 local T = {
@@ -51,7 +51,7 @@ local T = {
 local function set_fg(c) if has_color then term.setTextColor(c) end end
 local function set_bg(c) if has_color then term.setBackgroundColor(c) end end
 
--- ─── render primitives ──────────────────────────────────────────────────
+-- --- render primitives --------------------------------------------------
 
 local function screen_wh() return term.getSize() end
 
@@ -101,18 +101,23 @@ end
 local function draw_title_bar(title, right_text)
     local w = screen_wh()
     fill_line(1, T.title_bg)
-    write_at(2, 1, title, T.title_fg, T.title_bg)
-    if right_text then
-        local x = math.max(2 + #title + 2, w - #right_text)
-        write_at(x, 1, right_text, T.title_fg, T.title_bg)
+    title = tostring(title or "")
+    local right = right_text and tostring(right_text) or ""
+    -- Reserve space for right_text if it fits alongside the title (min 4
+    -- cols of gap + the right text itself); otherwise drop it.
+    local right_budget = (right ~= "" and (#right + 4) <= (w - 2 - 1)) and #right or 0
+    local title_max = w - 2 - (right_budget > 0 and right_budget + 2 or 0)
+    write_at(2, 1, truncate(title, title_max), T.title_fg, T.title_bg)
+    if right_budget > 0 then
+        write_at(w - right_budget, 1, right, T.title_fg, T.title_bg)
     end
     set_bg(T.bg); set_fg(T.fg)
 end
 
 local function draw_footer_bar(text)
-    local _, h = screen_wh()
+    local w, h = term.getSize()
     fill_line(h, T.footer_bg)
-    write_at(2, h, text, T.footer_fg, T.footer_bg)
+    write_at(2, h, truncate(tostring(text or ""), w - 3), T.footer_fg, T.footer_bg)
     set_bg(T.bg); set_fg(T.fg)
 end
 
@@ -120,12 +125,15 @@ local function draw_section(y, text)
     local w = screen_wh()
     set_bg(T.bg)
     term.setCursorPos(2, y); term.write(string.rep(" ", w - 2))  -- clear the row
-    write_at(2, y, string.rep("\140", 2) .. " ", T.section, T.bg)  -- ── prefix (char 140 = ─)
-    write_at(5, y, text, T.section, T.bg)
-    -- trailing dashes to edge
-    local trail_x = 5 + #text + 1
+    write_at(2, y, "-- ", T.section, T.bg)
+    -- Truncate title to the space between "-- " (col 5) and the right edge,
+    -- leaving a couple cols for a trailing dash.
+    local title_max = math.max(4, w - 5 - 2)
+    local shown = truncate(tostring(text or ""), title_max)
+    write_at(5, y, shown, T.section, T.bg)
+    local trail_x = 5 + #shown + 1
     if trail_x < w - 1 then
-        write_at(trail_x, y, " " .. string.rep("\140", w - trail_x - 1), T.section, T.bg)
+        write_at(trail_x, y, " " .. string.rep("-", w - trail_x - 1), T.section, T.bg)
     end
 end
 
@@ -134,15 +142,15 @@ local function clear_screen()
     term.clear()
 end
 
--- ─── menu item ──────────────────────────────────────────────────────────
+-- --- menu item ----------------------------------------------------------
 
 -- Item shape:
 --   { tag = "[install] ", tag_color = T.install, label = "collector",
 --     desc = "…",         action = "install", component = "collector" }
 --
 -- Special forms:
---   { section = "Components" }  — non-selectable section header
---   { spacer = true }           — non-selectable empty row
+--   { section = "Components" }  - non-selectable section header
+--   { spacer = true }           - non-selectable empty row
 
 local function is_selectable(it)
     return not it.section and not it.spacer
@@ -169,27 +177,41 @@ local function draw_menu_item(y, it, selected)
         write_at(2, y, "\16", T.sel_fg, T.sel_bg)   -- char 16 = ► in CC charset
     end
 
-    -- tag with semantic colour (but respect selection)
+    -- Budget the row: 1 col cursor gutter + tag + label + (gap + desc) → w-1
     local x = 4
+    local right_edge = w - 1
+    local desc_present = it.desc and it.desc ~= ""
+
+    -- tag with semantic colour (but respect selection)
     if it.tag then
         local tag_fg = selected and T.sel_fg or (it.tag_color or T.fg)
-        write_at(x, y, it.tag, tag_fg, bg)
-        x = x + #it.tag
+        local tag = truncate(it.tag, math.max(0, right_edge - x))
+        write_at(x, y, tag, tag_fg, bg)
+        x = x + #tag
     end
 
-    -- label
-    write_at(x, y, it.label or "", fg, bg)
-    x = x + #(it.label or "")
+    -- Label. If a description exists, reserve the last ~third of the row
+    -- for it (with a 2-col gap) so the label doesn't eat the whole line.
+    local label = tostring(it.label or "")
+    local label_budget
+    if desc_present then
+        label_budget = math.max(4, math.floor((right_edge - x) * 0.55))
+    else
+        label_budget = right_edge - x
+    end
+    label = truncate(label, label_budget)
+    write_at(x, y, label, fg, bg)
+    x = x + #label
 
     -- description (dim, right-trailing, word-safe truncation)
-    if it.desc and x + 2 < w - 1 then
-        local max = w - x - 3
+    if desc_present and x + 2 < right_edge then
+        local max = right_edge - x - 2
         write_at(x + 2, y, truncate(it.desc, max),
                  selected and T.sel_fg or T.dim, bg)
     end
 end
 
--- ─── arrow-key menu ─────────────────────────────────────────────────────
+-- --- arrow-key menu -----------------------------------------------------
 
 local function first_selectable(items)
     for i, it in ipairs(items) do if is_selectable(it) then return i end end
@@ -224,7 +246,7 @@ local function arrow_menu(items, title, right_text, footer_text)
             if it then draw_menu_item(start_y + i - 1, it, idx == sel) end
         end
 
-        draw_footer_bar(footer_text or " \24\25  navigate     \30  select     q  quit")
+        draw_footer_bar(footer_text or " \24\25  navigate     enter select     q  quit")
 
         local _, key = os.pullEvent("key")
         if key == keys.up then
@@ -243,7 +265,7 @@ local function arrow_menu(items, title, right_text, footer_text)
     end
 end
 
--- ─── state (what's installed) ───────────────────────────────────────────
+-- --- state (what's installed) -------------------------------------------
 
 local function load_state()
     if not fs.exists(STATE_FILE) then return { installed = {} } end
@@ -261,18 +283,23 @@ local function save_state(s)
     return true
 end
 
--- ─── manifest ───────────────────────────────────────────────────────────
+-- --- manifest -----------------------------------------------------------
 
 local function fetch_manifest()
     clear_screen()
     draw_title_bar("Energy Dashboard Installer", "starting")
     fill_line(2, T.bg)
-    write_at(2, 4, "Fetching manifest...", T.dim, T.bg)
+    local label = "Fetching manifest..."
+    write_at(2, 4, label, T.dim, T.bg)
+
+    -- Status column follows the label + a 2-col gap. Was hardcoded to col 26,
+    -- which overflowed on narrow pocket terminals.
+    local w = screen_wh()
+    local status_x = math.min(2 + #label + 2, w - 10)
 
     local res = http.get(MANIFEST_URL)
     if not res then
-        write_at(26, 4, "FAILED", T.err, T.bg)
-        local w = screen_wh()
+        write_at(status_x, 4, "FAILED", T.err, T.bg)
         local msg = wrap("Could not reach GitHub. Check the http allow-list in your CC:Tweaked config, and verify the server is online.", w - 4)
         for i, line in ipairs(msg) do
             write_at(2, 5 + i, line, T.err, T.bg)
@@ -282,15 +309,19 @@ local function fetch_manifest()
     local body = res.readAll(); res.close()
     local ok, m = pcall(textutils.unserialiseJSON, body)
     if not ok or type(m) ~= "table" or type(m.components) ~= "table" then
-        write_at(26, 4, "PARSE FAIL", T.err, T.bg)
+        write_at(status_x, 4, "PARSE FAIL", T.err, T.bg)
         return nil
     end
-    write_at(26, 4, "OK", T.ok, T.bg)
-    write_at(30, 4, "v" .. tostring(m.version or "?"), T.dim, T.bg)
+    write_at(status_x, 4, "OK", T.ok, T.bg)
+    -- Version tag after another small gap; skip if no room.
+    local ver_x = status_x + 4
+    if ver_x + 8 < w then
+        write_at(ver_x, 4, "v" .. tostring(m.version or "?"), T.dim, T.bg)
+    end
     return m
 end
 
--- ─── file ops ───────────────────────────────────────────────────────────
+-- --- file ops -----------------------------------------------------------
 
 local function download(url, target)
     local dir = fs.getDir(target)
@@ -307,7 +338,7 @@ local function write_startup(main)
     -- Works even if multiple main files are on disk (unusual).
     local f = fs.open(STARTUP_FILE, "w")
     if not f then return false end
-    f.writeLine("-- edash startup — generated by edi. Safe to delete to disable auto-run.")
+    f.writeLine("-- edash startup - generated by edi. Safe to delete to disable auto-run.")
     f.writeLine("for _, name in ipairs({\"" .. main .. "\", \"collector.lua\", \"core.lua\", \"panel.lua\"}) do")
     f.writeLine("  if fs.exists(name) then shell.run(name); return end")
     f.writeLine("end")
@@ -322,22 +353,34 @@ local function install_component(manifest, name)
     clear_screen()
     draw_title_bar("Installing " .. name, "v" .. tostring(manifest.version or "?"))
     fill_line(2, T.bg)
-    write_at(2, 4, c.description or "", T.dim, T.bg)
+    -- Description may be long; wrap it so it doesn't overflow the screen.
+    local w_hdr = screen_wh()
+    for dli, dline in ipairs(wrap(c.description or "", w_hdr - 3)) do
+        write_at(2, 3 + dli, dline, T.dim, T.bg)
+    end
 
     local total = #c.files
     local installed_files = {}
     for i, file in ipairs(c.files) do
         local y = 6 + i - 1
+        local w = screen_wh()
 
         -- step prefix
         local step = string.format("  [%d/%d]  ", i, total)
         write_at(2, y, step, T.dim, T.bg)
-        write_at(2 + #step, y, file.dst, T.fg, T.bg)
 
-        -- dots filler to right-align status
-        local w = screen_wh()
+        -- Reserve 10 cols at right for status ("OK 1234B" / "FAILED"), plus
+        -- one col gap on each side. Truncate filename into whatever remains.
         local status_x = w - 10
-        write_at(2 + #step + #file.dst + 1, y, string.rep(".", math.max(0, status_x - (2 + #step + #file.dst + 2))), T.dim, T.bg)
+        local name_start = 2 + #step
+        local name_budget = math.max(4, status_x - name_start - 2)
+        local shown_name = truncate(file.dst, name_budget)
+        write_at(name_start, y, shown_name, T.fg, T.bg)
+
+        -- dots filler between the name and the status column
+        local dots_x = name_start + #shown_name + 1
+        local dots_w = math.max(0, status_x - dots_x - 1)
+        write_at(dots_x, y, string.rep(".", dots_w), T.dim, T.bg)
 
         local url = manifest.repo .. "/" .. file.src
         local ok, sz = download(url, file.dst)
@@ -377,7 +420,7 @@ local function install_component(manifest, name)
     }
     save_state(state)
 
-    -- success summary — wrap so it fits on narrow terminals
+    -- success summary - wrap so it fits on narrow terminals
     local summary_y = start_y + 2
     local tw = screen_wh()
     local run_cmd = c.main:gsub("%.lua$", "")
@@ -386,7 +429,7 @@ local function install_component(manifest, name)
         write_at(2, summary_y + li - 1, line, T.ok, T.bg)
     end
     local hint_y = summary_y + #wrap("Installed " .. name .. ". Run with: " .. run_cmd, tw - 4)
-    for li, line in ipairs(wrap("Reboot or press Enter — first run will launch 'configure'.", tw - 4)) do
+    for li, line in ipairs(wrap("Reboot or press Enter - first run will launch 'configure'.", tw - 4)) do
         fill_line(hint_y + li - 1, T.bg)
         write_at(2, hint_y + li - 1, line, T.dim, T.bg)
     end
@@ -432,7 +475,7 @@ local function update_all(manifest)
         clear_screen()
         draw_title_bar("Update")
         fill_line(2, T.bg)
-        write_at(2, 4, "nothing installed yet — pick [install] from the menu first.",
+        write_at(2, 4, "nothing installed yet - pick [install] from the menu first.",
                  T.dim, T.bg)
         draw_footer_bar(" press any key")
         os.pullEvent("key")
@@ -441,7 +484,7 @@ local function update_all(manifest)
     for _, n in ipairs(names) do install_component(manifest, n) end
 end
 
--- ─── menu builders ──────────────────────────────────────────────────────
+-- --- menu builders ------------------------------------------------------
 
 local function tag_for_install(installed)
     if installed then
@@ -520,7 +563,7 @@ local function build_uninstall_menu()
     return items
 end
 
--- ─── main ───────────────────────────────────────────────────────────────
+-- --- main ---------------------------------------------------------------
 
 local function status_line(manifest)
     local state = load_state()
@@ -543,7 +586,7 @@ local function main()
             build_main_menu(manifest),
             "Energy Dashboard Installer",
             status_line(manifest),
-            " \24\25  navigate     \30  select     q  quit"
+            " \24\25  navigate     enter select     q  quit"
         )
         if not choice or choice.action == "quit" then
             clear_screen(); return
@@ -555,7 +598,7 @@ local function main()
             while true do
                 local sub = arrow_menu(build_uninstall_menu(),
                     "Energy Dashboard Installer", "uninstall",
-                    " \24\25  navigate     \30  select     q  back")
+                    " \24\25  navigate     enter select     q  back")
                 if not sub or sub.action == "back" then break end
                 if sub.action == "uninstall" then uninstall_component(sub.component) end
             end

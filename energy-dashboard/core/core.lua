@@ -22,7 +22,7 @@ local COMPONENT_VERSION = "0.4.0"
 -- is written to disk.
 configlib.run_first_run_wizard("core")
 
--- ─── config ──────────────────────────────────────────────────────────────
+-- --- config --------------------------------------------------------------
 
 local all_cfg = configlib.load_all()
 local cfg     = all_cfg.core or {}
@@ -55,14 +55,14 @@ local HORIZONS_S = {
     h24     = 24 * 60 * 60,
 }
 
--- ─── state ───────────────────────────────────────────────────────────────
+-- --- state ---------------------------------------------------------------
 
 -- collectors[id] = {
 --   last_msg = <raw packet>,
 --   last_ingest_ms = <ms>,
---   history_1s = ring<{ts, stored}>(60)  → 1 minute raw
---   history_1m = ring<{ts, stored}>(60)  → 1 hour @ 1m avg
---   history_5m = ring<{ts, stored}>(288) → 24 hour @ 5m avg
+--   history_1s = ring<{ts, stored}>(60)  -> 1 minute raw
+--   history_1m = ring<{ts, stored}>(60)  -> 1 hour @ 1m avg
+--   history_5m = ring<{ts, stored}>(288) -> 24 hour @ 5m avg
 --   samples_since_1m_rollup = <n>
 --   samples_since_5m_rollup = <n>
 --   lifetime_produced_fe = <n>  -- cumulative positive deltas
@@ -78,7 +78,7 @@ local lifetime = {
     uptime_prior_ms   = 0,  -- cumulative uptime from earlier runs
 }
 
--- ─── disk persistence ────────────────────────────────────────────────────
+-- --- disk persistence ----------------------------------------------------
 
 -- We persist ONLY lifetime counters + per-collector produced/consumed. The
 -- in-memory histories are re-populated from live data after restart; a
@@ -135,7 +135,7 @@ local function load_state()
     end
 end
 
--- ─── ingest ──────────────────────────────────────────────────────────────
+-- --- ingest --------------------------------------------------------------
 
 local function get_or_create_entry(id)
     local entry = collectors[id]
@@ -206,7 +206,7 @@ local function ingest(msg)
     end
 end
 
--- ─── rate computation ────────────────────────────────────────────────────
+-- --- rate computation ----------------------------------------------------
 
 -- Pick the ring most suitable for a given window_s.
 local function pick_history(entry, window_s)
@@ -243,7 +243,7 @@ local function compute_rate(entry, window_s, now_ms)
     return (newest.stored - past.stored) / dt_s
 end
 
--- ─── aggregation ─────────────────────────────────────────────────────────
+-- --- aggregation ---------------------------------------------------------
 
 -- Merge all collectors into one network-wide snapshot. Extend this when we
 -- want multi-network support (group by payload.networkId).
@@ -306,7 +306,7 @@ local function aggregate(now_ms)
     }
 end
 
--- ─── status canvas ───────────────────────────────────────────────────────
+-- --- status canvas -------------------------------------------------------
 
 local ui = {
     title        = "core",
@@ -352,20 +352,28 @@ local function update_ui()
 
     -- Collectors group
     local col_rows = {}
+    -- Only fully-hydrated collectors have ingested at least once; partially
+    -- restored stubs (from /edash_core.dat - carrying only lifetime counters
+    -- until their computer reports back in) have no last_ingest_ms, so we
+    -- skip them here to avoid nil arithmetic and to stop showing stale
+    -- entries for collectors that may never come back.
     local collector_ids = {}
-    for id in pairs(collectors) do collector_ids[#collector_ids + 1] = id end
+    for id, e in pairs(collectors) do
+        if e.last_ingest_ms then collector_ids[#collector_ids + 1] = id end
+    end
     table.sort(collector_ids)
     if #collector_ids == 0 then
         col_rows[#col_rows + 1] = { label = "(none yet)", value = "", bullet = bullet_wait[1], bullet_color = bullet_wait[2] }
     else
+        local now = os.epoch("utc")
         for _, id in ipairs(collector_ids) do
             local e = collectors[id]
-            local now = os.epoch("utc")
-            local stale = (e.last_ingest_ms == 0) or (now - e.last_ingest_ms >= STALE_MS)
+            local last = e.last_ingest_ms or 0
+            local stale = (last == 0) or (now - last >= STALE_MS)
             local b = stale and bullet_err or bullet_ok
             col_rows[#col_rows + 1] = {
                 label = "#" .. tostring(id),
-                value = stale and ("stale  " .. ago(e.last_ingest_ms)) or ago(e.last_ingest_ms),
+                value = stale and ("stale  " .. ago(last)) or ago(last),
                 bullet = b[1], bullet_color = b[2],
             }
         end
@@ -419,7 +427,7 @@ local function broadcast_aggregate()
     trackers.last_aggregate     = payload
 end
 
--- ─── main ────────────────────────────────────────────────────────────────
+-- --- main ----------------------------------------------------------------
 
 log.init("core", log.LEVEL.INFO, LOG_FILE)
 log.silence_terminal(true)

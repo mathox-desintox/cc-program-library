@@ -32,7 +32,7 @@ M.ROLE = {
     REMOTE    = "remote",
 }
 
--- Network ID — a per-world "team" string that isolates independent dashboards
+-- Network ID - a per-world "team" string that isolates independent dashboards
 -- broadcasting on the same ender-modem channel. Every outgoing packet is
 -- stamped with this value; every incoming packet whose id doesn't match is
 -- silently dropped. Each component sets it once at startup from config.

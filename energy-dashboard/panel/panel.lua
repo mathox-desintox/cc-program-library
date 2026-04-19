@@ -1,7 +1,7 @@
 -- energy-dashboard/panel/panel.lua
 --
 -- Render the core's aggregate state on an advanced monitor. Listens only
--- for CORE_AGGREGATE packets on PROTO_DATA — collectors never talk to the
+-- for CORE_AGGREGATE packets on PROTO_DATA - collectors never talk to the
 -- panel directly in the three-tier architecture.
 --
 -- Run on an advanced computer with a monitor attached and a modem.
@@ -21,7 +21,7 @@ local COMPONENT_VERSION = "0.4.0"
 -- picks which monitor + rate unit they want before we start drawing.
 configlib.run_first_run_wizard("panel")
 
--- ─── config ──────────────────────────────────────────────────────────────
+-- --- config --------------------------------------------------------------
 
 local all_cfg = configlib.load_all()
 local cfg     = all_cfg.panel or {}
@@ -39,13 +39,13 @@ local P                 = themes.pairs(THEME)
 -- ender-modem channel.
 comms.set_network_id(NETWORK_ID)
 
--- ─── state ───────────────────────────────────────────────────────────────
+-- --- state ---------------------------------------------------------------
 
 -- Most recent aggregate received, plus when we received it.
 local latest        = nil
 local latest_rx_ms  = 0
 
--- ─── helpers ─────────────────────────────────────────────────────────────
+-- --- helpers -------------------------------------------------------------
 
 local function status_for(agg, now_ms)
     if not agg then return "NO DATA", P.critical end
@@ -61,7 +61,7 @@ local function rate_color(rate_per_s)
     return P.value
 end
 
--- ─── rendering ───────────────────────────────────────────────────────────
+-- --- rendering -----------------------------------------------------------
 
 local function render(mon)
     local now_ms = os.epoch("utc")
@@ -102,7 +102,7 @@ local function render(mon)
     rate_row(row,     "1 hr",    "h1");      row = row + 1
     rate_row(row,     "24 hr",   "h24");     row = row + 1
 
-    -- ETA (based on instant rate — matches the "Rate instant" line)
+    -- ETA (based on instant rate - matches the "Rate instant" line)
     row = row + 1
     local eta_text = "idle"
     if agg.eta_to_full_s  then eta_text = "to full: "  .. util.fmtDuration(agg.eta_to_full_s)
@@ -135,7 +135,7 @@ local function render(mon)
     end
 end
 
--- ─── terminal status canvas ─────────────────────────────────────────────
+-- --- terminal status canvas ---------------------------------------------
 
 local term_ui = {
     title        = "panel",
@@ -217,7 +217,7 @@ local function update_term_ui()
     }
 end
 
--- ─── main ────────────────────────────────────────────────────────────────
+-- --- main ----------------------------------------------------------------
 
 log.init("panel", log.LEVEL.INFO, "/edash_panel.log")
 log.silence_terminal(true)

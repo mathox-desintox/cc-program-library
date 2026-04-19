@@ -16,7 +16,7 @@ local status    = require("common.status")
 
 configlib.run_first_run_wizard("collector")
 
--- ─── config ──────────────────────────────────────────────────────────────
+-- --- config --------------------------------------------------------------
 
 local COMPONENT_VERSION = "0.4.0"
 
@@ -30,7 +30,7 @@ local PREFERRED_PNAME = cfg.peripheral
 
 comms.set_network_id(NETWORK_ID)
 
--- ─── helpers ─────────────────────────────────────────────────────────────
+-- --- helpers -------------------------------------------------------------
 
 local function find_accessor()
     if PREFERRED_PNAME then
@@ -61,7 +61,7 @@ local function broadcast(reading)
     rednet.broadcast(pkt, comms.PROTO_DATA)
 end
 
--- ─── status-canvas state ─────────────────────────────────────────────────
+-- --- status-canvas state -------------------------------------------------
 
 local ui = {
     title        = "collector",
@@ -144,7 +144,7 @@ local function update_ui()
     }
 end
 
--- ─── main logic ──────────────────────────────────────────────────────────
+-- --- main logic ----------------------------------------------------------
 
 log.init("collector", log.LEVEL.INFO, "/edash_collector.log")
 log.silence_terminal(true)

@@ -19,7 +19,7 @@ M.FIRST_RUN_FLAG = "/.edash_first_run_done"
 -- this table, so adding a new knob here also adds it to the UI.
 M.DEFAULTS = {
     -- Shared across every component on this computer. network_id is the
-    -- per-world "team" identifier — lets multiple independent dashboards
+    -- per-world "team" identifier - lets multiple independent dashboards
     -- coexist on the same ender-modem broadcast domain. All packets are
     -- stamped with it and receivers silently drop mismatches.
     network_id = "default",
@@ -95,7 +95,7 @@ function M.save_all(full_config)
     local body = textutils.serialise(full_config)
     local f = fs.open(M.FILE, "w")
     if not f then return false, "cannot open " .. M.FILE .. " for writing" end
-    f.writeLine("-- edash config — edit via `configure`, or by hand. Regenerated as needed.")
+    f.writeLine("-- edash config - edit via `configure`, or by hand. Regenerated as needed.")
     f.write("return " .. body .. "\n")
     f.close()
     return true
@@ -107,20 +107,20 @@ end
 -- whether the user saves or discards inside configure, we touch the
 -- sentinel so subsequent boots don't re-prompt.
 --
--- Intentionally idempotent — safe to call on every start.
+-- Intentionally idempotent - safe to call on every start.
 function M.run_first_run_wizard(component_name)
     if fs.exists(M.FIRST_RUN_FLAG) then return false end
     if term and term.isColor and term.isColor() then term.setTextColor(colors.yellow) end
     print("")
-    print("─ first run detected for " .. tostring(component_name or "edash") .. " ─")
+    print("-- first run detected for " .. tostring(component_name or "edash") .. " --")
     if term and term.setTextColor then term.setTextColor(colors.white) end
-    print("launching `configure` — save your settings, then this program will resume.")
+    print("launching `configure` - save your settings, then this program will resume.")
     print("(press Ctrl+T in configure to skip; you can always run `configure` later)")
     sleep(1.5)
     if fs.exists("configure") or fs.exists("configure.lua") then
         shell.run("configure")
     else
-        print("(configure not installed — continuing with defaults)")
+        print("(configure not installed - continuing with defaults)")
     end
     local f = fs.open(M.FIRST_RUN_FLAG, "w")
     if f then f.writeLine(tostring(os.epoch("utc"))); f.close() end
