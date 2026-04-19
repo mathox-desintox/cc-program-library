@@ -16,7 +16,7 @@ local themes    = require("graphics.themes")
 local configlib = require("common.config")
 local status    = require("common.status")
 
-local COMPONENT_VERSION = "0.7.2"
+local COMPONENT_VERSION = "0.7.3"
 
 -- First-run wizard: auto-launch `configure` on first boot so the user
 -- picks which monitor + rate unit they want before we start drawing.
@@ -173,12 +173,6 @@ local function bucket_to_rates(bucket_v, bucket_ts, width, min_dt_ms)
     return rates
 end
 
--- Count non-nil entries in a sparse array of length `width`.
-local function sparse_count(arr, width)
-    local n = 0
-    for i = 1, width do if arr[i] ~= nil then n = n + 1 end end
-    return n
-end
 
 -- Rate in FE/s across the whole window: prefer endpoint-based (more
 -- accurate across any gaps) falling back to the last computed rate.
@@ -262,26 +256,32 @@ local function render(mon)
     local min_dt_ms           = (window_ms / chart_w) * 0.5
     local rates               = bucket_to_rates(bucket_v, bucket_ts, chart_w, min_dt_ms)
 
-    -- The chart is always drawn: line_chart handles sparse arrays and
-    -- just leaves a blank column wherever a bucket has no samples yet.
-    -- That covers the "window not fully populated" case naturally -
-    -- newest data appears on the right, older (unfilled) slots on the
-    -- left stay empty until the history buffer catches up.
-    local s = chart.line_chart(mon, chart_x, chart_top, chart_w, chart_h, rates, {
+    -- Chart is always drawn. hires_line_chart uses CC's teletext block
+    -- characters to get 2x horizontal and 3x vertical sub-pixel
+    -- resolution vs. the old cell-sized line, so flat-ish rate curves
+    -- actually show their small variations instead of quantising to
+    -- the coarse cell grid.
+    local s = chart.hires_line_chart(mon, chart_x, chart_top, chart_w, chart_h, rates, {
         pos_color  = THEME.charging,
         neg_color  = THEME.draining,
-        zero_color = THEME.bar_empty,
         bg         = THEME.bg,
     })
 
-    -- Stats block below the chart.
-    local have        = sparse_count(rates, chart_w)
-    local need        = hz.min_samples or 2
-    local have_enough = have >= need
+    -- Data availability for the derived stats. We require the series to
+    -- span at least the horizon's window before exposing rate / peak /
+    -- vol / ETA — otherwise those numbers mean "over whatever happens
+    -- to be in the buffer" and mislead far more than they help. The 5%
+    -- slack absorbs the few-ms jitter between consecutive broadcasts.
+    local data_span_ms = 0
+    if #stored_ts >= 2 then
+        data_span_ms = stored_ts[#stored_ts] - stored_ts[1]
+    end
+    local have_full_window = data_span_ms >= (window_ms * 0.95)
+
     local row  = chart_bot + 2
     local col2 = 2 + math.floor(w / 2)
 
-    if s then
+    if have_full_window and s then
         local rate_s  = window_rate(stored_vals, stored_ts)
         local vol_pct = (s.mean ~= 0) and (s.stdev / math.abs(s.mean) * 100) or 0
         gfx.indicator(mon, 2,    row, "rate",  6, util.fmtRate(rate_s, RATE_UNIT), P.label, rate_color(rate_s))
@@ -290,26 +290,19 @@ local function render(mon)
         gfx.indicator(mon, 2,    row, "peak+", 6, util.fmtRate(s.max, RATE_UNIT), P.label, P.ok)
         gfx.indicator(mon, col2, row, "peak-", 5, util.fmtRate(s.min, RATE_UNIT), P.label, P.warn)
         row = row + 1
-    else
-        -- No rate samples at all yet: leave the first two rows empty but
-        -- still advance `row` so the partial-data notice below shows up
-        -- in the usual ETA slot.
-        row = row + 2
-    end
-
-    if have_enough then
         local eta_text = "idle"
         if     agg.eta_to_full_s  then eta_text = "to full: "  .. util.fmtDuration(agg.eta_to_full_s)
         elseif agg.eta_to_empty_s then eta_text = "to empty: " .. util.fmtDuration(agg.eta_to_empty_s) end
         gfx.indicator(mon, 2, row, "ETA", 6, eta_text, P.label, P.value)
     else
-        -- Partial window: chart's left side is blank until enough buckets
-        -- fill in. Flag the calculated values as tentative and show the
-        -- progress count in the ETA slot.
+        -- Partial window: suppress rate / peak / vol / ETA entirely. Show
+        -- a single progress line so the user knows how much more history
+        -- we still need before the numbers are trustworthy.
+        local pct = math.min(100, math.floor(data_span_ms / window_ms * 100 + 0.5))
         local notice = string.format(
-            "peak/vol stats: %d/%d buckets filled (wait for full %s)",
-            have, need, hz.label)
-        gfx.write(mon, 2, row, notice, P.warn)
+            "%s stats: need full window  (%d%% collected)",
+            hz.label, pct)
+        gfx.write(mon, 2, row + 1, notice, P.warn)
     end
 
     -- Fill bar row + % label inline.

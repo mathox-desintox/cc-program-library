@@ -241,6 +241,153 @@ function M.line_chart(mon, x, y, w, h, values, opts)
     return s
 end
 
+-- Hi-res line chart using CC's teletext block characters. Each cell in
+-- the chart is a 2x3 sub-pixel grid, giving 2x horizontal and 3x vertical
+-- resolution vs. the plain line_chart. The character set at \128..\159
+-- covers 32 of the 64 possible 6-bit sub-pixel masks; masks with bit 5
+-- (bottom-right sub-pixel) set are rendered via the complement + colour-
+-- swap trick below. Accepts either one value per cell (cell_w entries)
+-- and interpolates mid-cell values for smoother horizontal transitions,
+-- or a sparse array with some entries nil for natural gaps.
+--
+--    sub-pixel bit layout within a cell:
+--       bit 0 | bit 1      (top row, sub_y=0)
+--       bit 2 | bit 3      (middle row, sub_y=1)
+--       bit 4 | bit 5      (bottom row, sub_y=2)   bit 5 requires
+--                                                  colour inversion
+function M.hires_line_chart(mon, x, y, cell_w, cell_h, values, opts)
+    opts = opts or {}
+    local pos_color = opts.pos_color or colors.lime
+    local neg_color = opts.neg_color or colors.orange
+    local bg        = opts.bg        or colors.black
+
+    local sw = cell_w * 2     -- sub-pixel columns
+    local sh = cell_h * 3     -- sub-pixel rows
+
+    -- Clear the cell area to bg first so unpainted cells stay clean.
+    local blank = string.rep(" ", cell_w)
+    mon.setBackgroundColor(bg)
+    for r = 0, cell_h - 1 do
+        mon.setCursorPos(x, y + r)
+        mon.write(blank)
+    end
+
+    local s = stats_sparse(values, cell_w)
+    if not s then return nil end
+
+    -- Same auto-scale rules as line_chart: tight range for same-sign
+    -- series, zero-anchored for mixed signs.
+    local vmin, vmax
+    if s.min >= 0 and s.max >= 0 and s.max > 0 then
+        local pad = (s.max - s.min) * 0.1
+        if pad <= 0 then pad = math.abs(s.max) * 0.05 + 1 end
+        vmin = math.max(0, s.min - pad)
+        vmax = s.max + pad
+    elseif s.max <= 0 and s.min <= 0 and s.min < 0 then
+        local pad = (s.max - s.min) * 0.1
+        if pad <= 0 then pad = math.abs(s.min) * 0.05 + 1 end
+        vmin = s.min - pad
+        vmax = math.min(0, s.max + pad)
+    else
+        vmax = math.max(s.max, 0)
+        vmin = math.min(s.min, 0)
+    end
+
+    local span = vmax - vmin
+    if span <= 0 then span = 1 end
+
+    local function row_for(v)
+        local frac = (v - vmin) / span
+        return sh - 1 - math.floor(frac * (sh - 1) + 0.5)
+    end
+
+    -- For each cell c, sub-col 0 anchors on values[c]; sub-col 1 sits at
+    -- the mid-point with values[c+1] so adjacent cells connect smoothly.
+    local sub_rows, sub_sign = {}, {}
+    for c = 1, cell_w do
+        local v = values[c]
+        if v ~= nil then
+            local left_sx  = (c - 1) * 2       -- 0-indexed
+            local right_sx = (c - 1) * 2 + 1
+            sub_rows[left_sx]  = row_for(v)
+            sub_sign[left_sx]  = (v >= 0) and "+" or "-"
+            local v_next = values[c + 1]
+            if v_next ~= nil then
+                sub_rows[right_sx] = row_for((v + v_next) / 2)
+                sub_sign[right_sx] = ((v + v_next) >= 0) and "+" or "-"
+            else
+                sub_rows[right_sx] = sub_rows[left_sx]
+                sub_sign[right_sx] = sub_sign[left_sx]
+            end
+        end
+    end
+
+    -- Stair-step fill between adjacent sub-columns, recorded in a
+    -- sub-pixel grid we'll then pack into character-cell masks.
+    local pixels = {}
+    for sy = 0, sh - 1 do pixels[sy] = {} end
+    for sx = 0, sw - 1 do
+        local rc = sub_rows[sx]
+        if rc then
+            local rc_next = sub_rows[sx + 1] or rc
+            local sign = sub_sign[sx]
+            local lo = math.min(rc, rc_next)
+            local hi = math.max(rc, rc_next)
+            for r = lo, hi do
+                pixels[r][sx] = sign
+            end
+        end
+    end
+
+    -- Pack each 2x3 sub-pixel block into a character + colour pair.
+    for cy = 0, cell_h - 1 do
+        for cx = 0, cell_w - 1 do
+            local pos_mask, neg_mask = 0, 0
+            for sy = 0, 2 do
+                for sxd = 0, 1 do
+                    local sx = cx * 2 + sxd
+                    local sy_abs = cy * 3 + sy
+                    local bit = 2 ^ (sy * 2 + sxd)
+                    local p = pixels[sy_abs] and pixels[sy_abs][sx]
+                    if p == "+" then pos_mask = pos_mask + bit
+                    elseif p == "-" then neg_mask = neg_mask + bit end
+                end
+            end
+
+            local mask, line_color
+            if pos_mask > 0 and neg_mask == 0 then
+                mask, line_color = pos_mask, pos_color
+            elseif neg_mask > 0 and pos_mask == 0 then
+                mask, line_color = neg_mask, neg_color
+            elseif pos_mask + neg_mask > 0 then
+                -- Mixed sign within a single cell: merge masks, pos wins
+                -- the colour choice (rare — only at zero crossings).
+                mask, line_color = pos_mask + neg_mask, pos_color
+            else
+                mask = 0
+            end
+
+            if mask > 0 then
+                local ch, fg, bg2
+                if mask >= 32 then
+                    ch = 128 + (63 - mask)   -- 6-bit complement in 0..31
+                    fg, bg2 = bg, line_color  -- invert colours
+                else
+                    ch = 128 + mask
+                    fg, bg2 = line_color, bg
+                end
+                mon.setTextColor(fg)
+                mon.setBackgroundColor(bg2)
+                mon.setCursorPos(x + cx, y + cy)
+                mon.write(string.char(ch))
+            end
+        end
+    end
+
+    mon.setBackgroundColor(bg)
+    return s
+end
+
 -- Kept for legacy callers but no longer used by the panel.
 function M.signed_chart(mon, x, y, w, h, values, opts)
     opts = opts or {}
