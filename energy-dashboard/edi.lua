@@ -786,6 +786,65 @@ local function status_line(manifest)
         tostring(manifest.version or "?"), n)
 end
 
+-- Render a button at (x, y). Returns { x, y, w, action? }.
+local function draw_pill(x, y, label, bg_color, fg_color, disabled)
+    local text = "[ " .. label .. " ]"
+    term.setCursorPos(x, y)
+    if disabled then
+        set_bg(colors.gray); set_fg(colors.lightGray)
+    else
+        set_bg(bg_color); set_fg(fg_color)
+    end
+    term.write(text)
+    return { x = x, y = y, w = #text, disabled = disabled }
+end
+
+-- Quit dialog. If anything is installed we offer a Reboot button alongside
+-- a plain Quit-only button, defaulted to Reboot (Enter triggers it).
+-- Returns true if the caller should call os.reboot().
+local function quit_prompt()
+    local state = load_state()
+    local installed_count = 0
+    for _ in pairs(state.installed) do installed_count = installed_count + 1 end
+    if installed_count == 0 then return false end
+
+    clear_screen()
+    draw_title_bar("Quit", string.format("%d installed", installed_count))
+    fill_line(2, T.bg)
+
+    local w = screen_wh()
+    for i, line in ipairs(wrap(
+        "Reboot the computer so installed components auto-start, or exit without rebooting? You can always come back by running the installer again.",
+        w - 4)) do
+        write_at(2, 3 + i, line, T.dim, T.bg)
+    end
+
+    local btn_y = 10
+    local btns = {}
+    local b = draw_pill(2, btn_y, "reboot now (enter)", colors.lime, colors.black, false)
+    b.action = "reboot"; btns[#btns + 1] = b
+    b = draw_pill(2 + b.w + 2, btn_y, "quit only", colors.gray, colors.white, false)
+    b.action = "quit"; btns[#btns + 1] = b
+    set_bg(T.bg); set_fg(T.fg)
+
+    draw_footer_bar(" enter reboot  |  q / esc  quit without rebooting  |  click a button")
+
+    while true do
+        local event, p1, p2, p3 = os.pullEvent()
+        if event == "key" then
+            if p1 == keys.enter then return true
+            elseif p1 == keys.q or p1 == keys.escape then return false
+            end
+        elseif event == "mouse_click" and p1 == 1 then
+            for _, bb in ipairs(btns) do
+                if p3 == bb.y and p2 >= bb.x and p2 < bb.x + bb.w then
+                    return bb.action == "reboot"
+                end
+            end
+        end
+    end
+end
+
 local function main()
     local manifest = fetch_manifest()
     if not manifest then
@@ -802,6 +861,9 @@ local function main()
             " \24\25  navigate     enter select     q  quit"
         )
         if not choice or choice.action == "quit" then
+            if quit_prompt() then
+                clear_screen(); os.reboot()
+            end
             clear_screen(); return
         elseif choice.action == "install" then
             install_component(manifest, choice.component)

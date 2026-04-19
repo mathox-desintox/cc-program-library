@@ -178,13 +178,23 @@ end
 
 -- --- value formatting / changed detection -------------------------------
 
+-- Display value with a visual hint for the field kind:
+--   text/number:  "[ value ]"
+--   enum:         "< value >"    (click / enter cycles)
+--   peripheral:   "[ value ] v"  (click / enter opens picker)
+--
+-- The brackets are the "form field" indicator — consistent across kinds
+-- so the user sees every row as something they can click into.
 local function value_text(field, v)
-    if v == nil then
-        if field.kind == "peripheral" then return "auto" end
-        return "(unset)"
+    if field.kind == "enum" then
+        return "< " .. tostring(v == nil and "" or v) .. " >"
+    elseif field.kind == "peripheral" then
+        return "[ " .. (v == nil and "auto" or tostring(v)) .. " ] v"
+    else
+        -- text / number
+        local shown = (v == nil) and "" or tostring(v)
+        return "[ " .. shown .. " ]"
     end
-    if field.kind == "enum" then return "/" .. tostring(v) end
-    return tostring(v)
 end
 
 local function default_for(page, field)
@@ -196,44 +206,74 @@ local function is_changed(page, field, current)
     return current ~= default_for(page, field)
 end
 
--- --- inline input bar (replaces footer while editing) -------------------
+-- --- inline text editor -------------------------------------------------
+--
+-- Takes over the value area of a single field row and lets the user type
+-- a replacement directly. Highlighted distinct from the row's selection
+-- styling so they can see they're in edit mode. Enter commits, Esc cancels,
+-- clicking outside the field commits. Left/right/home/end move the cursor.
 
-local function prompt_inline(label, current)
-    local w, h = term.getSize()
-    fill_line(h - 1, T.bg)
-    fill_line(h,     T.footer_bg)
-    local prefix = tostring(label or "value") .. ":  "
-    write_at(2, h - 1, prefix, T.accent, T.bg)
-    write_at(2, h, " enter confirm    esc cancel    empty = keep", T.footer_fg, T.footer_bg)
+local function inline_edit_text(y, x_start, w_budget, current, is_number)
+    local buf = tostring(current == nil and "" or current)
+    local cursor = #buf + 1
+    local max_text = math.max(3, w_budget - 2)  -- room for "[" and "]"
 
-    local input_x = 2 + #prefix
-    local input_w = math.max(4, w - input_x - 1)
+    local function render_box()
+        term.setCursorPos(x_start, y)
+        set_bg(T.changed); set_fg(colors.black)
+        local display = buf
+        -- Horizontal scroll: keep cursor visible within max_text cols.
+        local win_start = 1
+        if cursor > max_text then win_start = cursor - max_text + 1 end
+        display = display:sub(win_start, win_start + max_text - 1)
+        term.write("[" .. display .. string.rep(" ", max_text - #display) .. "]")
+        -- Position the blinking cursor just after the typed content.
+        local cx = x_start + 1 + (cursor - win_start)
+        term.setCursorPos(math.min(cx, x_start + 1 + max_text), y)
+        term.setCursorBlink(true)
+    end
 
-    local buf = ""
     while true do
-        -- redraw input line
-        fill_line(h - 1, T.bg)
-        write_at(2, h - 1, prefix, T.accent, T.bg)
-        if buf == "" and current ~= nil and current ~= "" then
-            write_at(input_x, h - 1, util.truncate("(was " .. tostring(current) .. ")", input_w), T.dim, T.bg)
-        else
-            write_at(input_x, h - 1, util.truncate(buf, input_w), T.fg, T.bg)
-        end
-        term.setCursorPos(input_x + math.min(#buf, input_w), h - 1)
-        set_fg(T.fg); set_bg(T.bg)
+        render_box()
+        local event, p1, p2, p3 = os.pullEvent()
 
-        local event, p1 = os.pullEvent()
         if event == "char" then
-            buf = buf .. p1
+            buf = buf:sub(1, cursor - 1) .. p1 .. buf:sub(cursor)
+            cursor = cursor + 1
         elseif event == "key" then
             if p1 == keys.enter then
-                if buf == "" then return current, false end
+                term.setCursorBlink(false)
+                if is_number then
+                    local n = tonumber(buf)
+                    if n then return n, true end
+                    return current, false
+                end
                 return buf, true
-            elseif p1 == keys.backspace and #buf > 0 then
-                buf = buf:sub(1, -2)
             elseif p1 == keys.escape then
-                return current, false
+                term.setCursorBlink(false); return current, false
+            elseif p1 == keys.backspace and cursor > 1 then
+                buf = buf:sub(1, cursor - 2) .. buf:sub(cursor); cursor = cursor - 1
+            elseif p1 == keys.delete and cursor <= #buf then
+                buf = buf:sub(1, cursor - 1) .. buf:sub(cursor + 1)
+            elseif p1 == keys.left and cursor > 1       then cursor = cursor - 1
+            elseif p1 == keys.right and cursor <= #buf  then cursor = cursor + 1
+            elseif p1 == keys.home                      then cursor = 1
+            elseif p1 == keys["end"]                    then cursor = #buf + 1
             end
+        elseif event == "mouse_click" then
+            -- Click outside the editable field commits what's typed.
+            if p3 ~= y or p2 < x_start or p2 >= x_start + max_text + 2 then
+                term.setCursorBlink(false)
+                if is_number then
+                    local n = tonumber(buf)
+                    if n then return n, true end
+                    return current, false
+                end
+                return buf, true
+            end
+            -- Click inside moves the cursor to the clicked column.
+            local rel = p2 - (x_start + 1) + 1
+            cursor = math.max(1, math.min(rel, #buf + 1))
         end
     end
 end
@@ -323,14 +363,21 @@ local function draw_button_strip(page_idx, total_pages)
     b = draw_button(x, h, "next >", colors.cyan, colors.black, next_disabled)
     b.action = "next"; buttons[#buttons + 1] = b
 
-    -- Right side: save (lime), cancel (red). Right-align so they hug the edge.
+    -- Right side: cancel always; save only on the last page (wizard flow —
+    -- you can only finish from the end).
+    local on_last = (page_idx >= total_pages)
     local save_text = "[ save (s) ]"
     local cancel_text = "[ cancel (q) ]"
-    local right_start = w - #cancel_text - #save_text - 1
+    local right_width = #cancel_text + (on_last and (#save_text + 1) or 0)
+    local right_start = w - right_width - 1
+
     if right_start > x + 2 then
-        b = draw_button(right_start, h, "save (s)", colors.lime, colors.black, false)
-        b.action = "save"; buttons[#buttons + 1] = b
-        b = draw_button(right_start + b.w + 1, h, "cancel (q)", colors.red, colors.black, false)
+        if on_last then
+            b = draw_button(right_start, h, "save (s)", colors.lime, colors.black, false)
+            b.action = "save"; buttons[#buttons + 1] = b
+            right_start = right_start + b.w + 1
+        end
+        b = draw_button(right_start, h, "cancel (q)", colors.red, colors.black, false)
         b.action = "cancel"; buttons[#buttons + 1] = b
     end
 
@@ -349,11 +396,11 @@ local function draw_page(page, page_idx, total_pages, all_cfg, sel_field_idx)
     draw_section(3, page.title)
 
     local rows_y = 5
-    local field_row_ys = {}
+    local label_w = 18
+    local field_geom = {}  -- i -> { y, x_value, w_budget }
     for i, field in ipairs(page.fields) do
         local y = rows_y + i - 1
         if y >= h - 5 then break end
-        field_row_ys[i] = y
         local current = page.get(all_cfg, field.key)
         local selected = (i == sel_field_idx)
         local bg = selected and T.sel_bg or T.bg
@@ -361,16 +408,18 @@ local function draw_page(page, page_idx, total_pages, all_cfg, sel_field_idx)
         fill_line(y, bg)
         if selected then write_at(2, y, "\16", T.sel_fg, T.sel_bg) end
 
-        local label_w = 18
         write_at(4, y, util.pad(field.label, label_w), fg, bg)
+
+        local x_value = 4 + label_w
+        local w_budget = w - x_value - 2
+        field_geom[i] = { y = y, x_value = x_value, w_budget = w_budget }
 
         local vtext = value_text(field, current)
         local value_fg = fg
         if not selected and is_changed(page, field, current) then
             value_fg = T.changed
         end
-        local value_max = w - (4 + label_w) - 2
-        write_at(4 + label_w, y, util.truncate(vtext, value_max), value_fg, bg)
+        write_at(x_value, y, util.truncate(vtext, w_budget), value_fg, bg)
     end
 
     -- Detail panel with help for the currently-selected field.
@@ -385,24 +434,26 @@ local function draw_page(page, page_idx, total_pages, all_cfg, sel_field_idx)
     end
 
     local buttons = draw_button_strip(page_idx, total_pages)
-    return field_row_ys, buttons
+    return field_geom, buttons
 end
 
 -- --- per-field editing --------------------------------------------------
+--
+-- `row_geom` is { y, x_value, w_budget } — the location of the value area
+-- on the currently-rendered page. text/number fields turn that area into
+-- an inline editable text box. enums cycle in place; peripherals open a
+-- popup picker.
 
-local function edit_field(page, field, all_cfg)
+local function edit_field(page, field, all_cfg, row_geom)
     local current = page.get(all_cfg, field.key)
 
     if field.kind == "text" then
-        local v, ok = prompt_inline(field.label, current)
+        local v, ok = inline_edit_text(row_geom.y, row_geom.x_value, row_geom.w_budget, current, false)
         if ok then page.set(all_cfg, field.key, v) end
 
     elseif field.kind == "number" then
-        local v, ok = prompt_inline(field.label, current)
-        if ok then
-            local n = tonumber(v)
-            if n then page.set(all_cfg, field.key, n) end
-        end
+        local v, ok = inline_edit_text(row_geom.y, row_geom.x_value, row_geom.w_budget, current, true)
+        if ok then page.set(all_cfg, field.key, v) end
 
     elseif field.kind == "enum" then
         local opts = field.options or {}
@@ -438,31 +489,74 @@ local function main()
     local page_idx  = 1
     local field_idx = 1
 
-    local function do_save()
-        local ok, err = config.save_all(all_cfg)
+    -- Show a post-save / post-cancel completion screen with a [reboot]
+    -- button alongside the usual "continue".
+    local function completion_screen(lines_iter)
         clear_screen()
         draw_title_bar("Configure")
         fill_line(2, T.bg)
-        if ok then
-            write_at(2, 4, "saved to " .. config.FILE, T.ok, T.bg)
-            write_at(2, 5, "restart component(s) to apply.", T.dim, T.bg)
-        else
-            write_at(2, 4, "save failed: " .. tostring(err), T.err, T.bg)
+        local _, h = term.getSize()
+        local y = 4
+        for _, line in ipairs(lines_iter) do
+            write_at(2, y, line.text, line.color or T.fg, T.bg)
+            y = y + 1
         end
-        draw_footer_bar(" press any key")
-        os.pullEvent("key")
+
+        -- Completion action strip (replaces the plain footer bar).
+        fill_line(h, T.bg)
+        local btns = {}
+        local b = draw_button(2, h, "reboot now", colors.lime, colors.black, false)
+        b.action = "reboot"; btns[#btns + 1] = b
+        b = draw_button(2 + b.w + 1, h, "continue", colors.gray, colors.white, false)
+        b.action = "continue"; btns[#btns + 1] = b
+        set_bg(T.bg); set_fg(T.fg)
+
+        while true do
+            local event, p1, p2, p3 = os.pullEvent()
+            if event == "key" then
+                if p1 == keys.enter then os.reboot() end
+                return
+            elseif event == "mouse_click" and p1 == 1 then
+                for _, bb in ipairs(btns) do
+                    if p3 == bb.y and p2 >= bb.x and p2 < bb.x + bb.w then
+                        if bb.action == "reboot" then os.reboot() end
+                        return
+                    end
+                end
+                return  -- click outside buttons = continue
+            end
+        end
+    end
+
+    local function do_save()
+        local ok, err = config.save_all(all_cfg)
+        if ok then
+            completion_screen({
+                { text = "saved to " .. config.FILE,        color = T.ok  },
+                { text = "restart component(s) to apply.",  color = T.dim },
+                { text = ""                                                },
+                { text = "reboot now to auto-start them, or continue without.",
+                                                             color = T.dim },
+            })
+        else
+            completion_screen({
+                { text = "save failed: " .. tostring(err),  color = T.err },
+            })
+        end
     end
 
     local function do_cancel()
-        clear_screen()
-        set_fg(T.dim); print("discarded."); set_fg(T.fg)
+        completion_screen({
+            { text = "discarded - no changes written.",     color = T.dim },
+        })
     end
 
     while true do
         local page = pages[page_idx]
         if field_idx > #page.fields then field_idx = #page.fields end
         if field_idx < 1 then field_idx = 1 end
-        local field_row_ys, buttons = draw_page(page, page_idx, #pages, all_cfg, field_idx)
+        local field_geom, buttons = draw_page(page, page_idx, #pages, all_cfg, field_idx)
+        local on_last_page = (page_idx == #pages)
 
         local event, p1, p2, p3 = os.pullEvent()
 
@@ -474,8 +568,8 @@ local function main()
             elseif key == keys.right and page_idx  < #pages       then page_idx = page_idx + 1; field_idx = 1
             elseif key == keys.tab   and page_idx  < #pages       then page_idx = page_idx + 1; field_idx = 1
             elseif key == keys.enter then
-                edit_field(page, page.fields[field_idx], all_cfg)
-            elseif key == keys.s then do_save(); return
+                edit_field(page, page.fields[field_idx], all_cfg, field_geom[field_idx])
+            elseif key == keys.s and on_last_page then do_save(); return
             elseif key == keys.q then do_cancel(); return
             end
 
@@ -496,13 +590,12 @@ local function main()
                 end
             end
 
-            -- Field-row hit-test: click anywhere on a field row selects and
-            -- starts editing that field in one step (single-click UX).
+            -- Field hit-test: click on the row y starts editing THAT field.
             if not handled then
-                for i, row_y in ipairs(field_row_ys or {}) do
-                    if y == row_y then
+                for i, geom in pairs(field_geom or {}) do
+                    if y == geom.y then
                         field_idx = i
-                        edit_field(page, page.fields[i], all_cfg)
+                        edit_field(page, page.fields[i], all_cfg, geom)
                         break
                     end
                 end
