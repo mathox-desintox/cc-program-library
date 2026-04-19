@@ -15,8 +15,15 @@
 -- uninstall know what was previously installed on this computer.
 
 local MANIFEST_URL = "https://raw.githubusercontent.com/mathox-desintox/cc-program-library/main/energy-dashboard/build/manifest.json"
+local EDI_RAW_URL  = "https://raw.githubusercontent.com/mathox-desintox/cc-program-library/main/energy-dashboard/edi.lua"
 local STATE_FILE   = "/.edi_state"
 local STARTUP_FILE = "/startup.lua"
+
+-- Installer version. Compared against `manifest.edi.latest_version` and
+-- each component's `edi_compat = { min, max }` so the manifest can
+-- refuse to let an outdated pastebin-cached installer touch components
+-- that rely on newer installer behaviour.
+local EDI_VERSION = "1.0.0"
 
 -- --- theme --------------------------------------------------------------
 
@@ -171,6 +178,100 @@ local function press_continue(hint)
         if event == "key" or event == "char" then return end
         if event == "mouse_click" and p1 == 1 then return end
     end
+end
+
+-- --- version helpers ----------------------------------------------------
+--
+-- Dotted-decimal version strings ("1.2.3") parsed into number arrays +
+-- compared by component. Missing components default to 0, so "1.2" and
+-- "1.2.0" compare equal. Anything non-numeric is stripped, so a build
+-- suffix ("1.0.0-rc1") is still orderable against plain versions.
+
+local function parse_version(v)
+    local parts = {}
+    for n in tostring(v or "0"):gmatch("(%d+)") do
+        parts[#parts + 1] = tonumber(n)
+    end
+    return parts
+end
+
+local function cmp_version(a, b)
+    local pa, pb = parse_version(a), parse_version(b)
+    local m = math.max(#pa, #pb)
+    for i = 1, m do
+        local x, y = pa[i] or 0, pb[i] or 0
+        if x < y then return -1 end
+        if x > y then return  1 end
+    end
+    return 0
+end
+
+-- Return (true) if the component's edi_compat block (if any) accepts
+-- EDI_VERSION, otherwise (false, reason) with a short human message.
+local function check_edi_compat(component)
+    local compat = component and component.edi_compat
+    if type(compat) ~= "table" then return true end
+    if compat.min and cmp_version(EDI_VERSION, compat.min) < 0 then
+        return false, "needs edi >= " .. compat.min .. " (you have " .. EDI_VERSION .. ")"
+    end
+    if compat.max and cmp_version(EDI_VERSION, compat.max) > 0 then
+        return false, "needs edi <= " .. compat.max .. " (you have " .. EDI_VERSION .. ")"
+    end
+    return true
+end
+
+-- Screen shown at startup when the repo is shipping a newer installer
+-- than the one the user's pastebin is serving. Non-blocking; the user
+-- can continue with the stale edi at their own risk.
+local function show_edi_outdated(local_v, latest_v)
+    clear_screen()
+    draw_title_bar("edi update available", "v" .. local_v .. " -> v" .. latest_v)
+    fill_line(2, T.bg)
+
+    local w, h = term.getSize()
+    local lines = wrap(
+        "The project is shipping a newer version of this installer. " ..
+        "Some components in the manifest may refuse to install with the " ..
+        "older edi you have cached on pastebin.", w - 4)
+    local y = 3
+    for _, line in ipairs(lines) do
+        write_at(2, y, line, T.warn, T.bg); y = y + 1
+    end
+
+    y = y + 1
+    write_at(2, y, "To update:", T.dim, T.bg); y = y + 1
+    write_at(2, y, "  1. re-run `pastebin run <code>` (if the paste was refreshed)",
+        T.dim, T.bg); y = y + 1
+    write_at(2, y, "  2. or pull edi.lua straight from GitHub:",
+        T.dim, T.bg); y = y + 1
+    for _, line in ipairs(wrap(EDI_RAW_URL, w - 6)) do
+        if y >= h - 1 then break end
+        write_at(4, y, line, T.section, T.bg); y = y + 1
+    end
+
+    press_continue("continue with existing edi")
+end
+
+-- Screen shown when the user tries to install a component that the
+-- manifest says is incompatible with this edi.
+local function show_component_incompat(component_name, reason)
+    clear_screen()
+    draw_title_bar("Incompatible component", component_name)
+    fill_line(2, T.bg)
+
+    local w = screen_wh()
+    local y = 3
+    for _, line in ipairs(wrap(
+        component_name .. " " .. reason .. ".", w - 4)) do
+        write_at(2, y, line, T.err, T.bg); y = y + 1
+    end
+    y = y + 1
+    for _, line in ipairs(wrap(
+        "Update edi first (see the warning on the main menu), then " ..
+        "retry the install.", w - 4)) do
+        write_at(2, y, line, T.dim, T.bg); y = y + 1
+    end
+    press_continue("return to menu")
 end
 
 -- --- menu item ----------------------------------------------------------
@@ -431,6 +532,15 @@ end
 local function install_component(manifest, name)
     local c = manifest.components[name]
     if not c then return false end
+
+    -- Refuse to install if the manifest says this component needs a
+    -- different edi. Shows a dedicated screen so the user knows what
+    -- to do rather than silently failing.
+    local compat_ok, reason = check_edi_compat(c)
+    if not compat_ok then
+        show_component_incompat(name, reason)
+        return false
+    end
 
     clear_screen()
     draw_title_bar("Installing " .. name, "v" .. tostring(manifest.version or "?"))
@@ -831,8 +941,8 @@ local function status_line(manifest)
     local state = load_state()
     local n = 0
     for _ in pairs(state.installed) do n = n + 1 end
-    return string.format("manifest v%s  %d installed",
-        tostring(manifest.version or "?"), n)
+    return string.format("edi v%s  manifest v%s  %d installed",
+        EDI_VERSION, tostring(manifest.version or "?"), n)
 end
 
 -- Quit dialog. If anything is installed we offer a Reboot button alongside
@@ -886,6 +996,14 @@ local function main()
     if not manifest then
         press_continue()
         clear_screen(); return
+    end
+
+    -- Self-check: warn (once per run) when the manifest advertises a
+    -- newer edi than this one. Doesn't block — components with a hard
+    -- edi_compat requirement are caught at install time.
+    local edi_latest = manifest.edi and manifest.edi.latest_version
+    if edi_latest and cmp_version(EDI_VERSION, edi_latest) < 0 then
+        show_edi_outdated(EDI_VERSION, edi_latest)
     end
 
     while true do
