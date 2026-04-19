@@ -144,7 +144,6 @@ Rate defaults to **per-tick** (`/t`) — Minecraft's native time unit. Toggle to
 
 ## What's intentionally missing (coming in later milestones)
 
-- **M5**: Enhanced main display — clickable horizon-switcher on a rate graph, volatility, watermarks.
 - **M6**: Drive display — per-cell heatmap.
 - **M7**: Lifetime display — production/consumption projections.
 - **M8**: Alarms + speaker + event log.

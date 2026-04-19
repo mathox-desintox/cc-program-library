@@ -18,7 +18,7 @@ configlib.run_first_run_wizard("collector")
 
 -- --- config --------------------------------------------------------------
 
-local COMPONENT_VERSION = "0.4.0"
+local COMPONENT_VERSION = "0.5.0"
 
 local all_cfg = configlib.load_all()
 local cfg     = all_cfg.collector or {}

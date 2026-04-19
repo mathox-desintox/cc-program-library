@@ -15,7 +15,7 @@ local util      = require("common.util")
 local configlib = require("common.config")
 local status    = require("common.status")
 
-local COMPONENT_VERSION = "0.4.0"
+local COMPONENT_VERSION = "0.5.0"
 
 -- First-run wizard: auto-launch `configure` on first boot so intervals,
 -- state-file path, and log-file path can be adjusted before anything
@@ -77,6 +77,16 @@ local lifetime = {
     started_at_ms     = os.epoch("utc"),
     uptime_prior_ms   = 0,  -- cumulative uptime from earlier runs
 }
+
+-- Network-wide rollup rings used to feed the panel's chart. Snapshotted
+-- once per broadcast from the aggregated network_stored value, so every
+-- panel gets the same series without recomputing per-collector totals.
+-- s1: 5 min @ 1s, m1: 1 hour @ 1m, m5: 24 h @ 5m.
+local net_history_s1 = util.ring(300)
+local net_history_m1 = util.ring(60)
+local net_history_m5 = util.ring(288)
+local net_samples_since_1m = 0
+local net_samples_since_5m = 0
 
 -- --- disk persistence ----------------------------------------------------
 
@@ -241,6 +251,48 @@ local function compute_rate(entry, window_s, now_ms)
     local dt_s = (newest.ts - past.ts) / 1000
     if dt_s <= 0 then return 0 end
     return (newest.stored - past.stored) / dt_s
+end
+
+-- --- network history snapshot -------------------------------------------
+
+local function push_network_sample(stored, now_ms)
+    net_history_s1:push({ ts = now_ms, stored = stored })
+    net_samples_since_1m = net_samples_since_1m + 1
+    if net_samples_since_1m >= 60 then
+        -- mean of the last 60 one-second samples
+        local sum, count = 0, 0
+        for i = 1, math.min(60, net_history_s1:len()) do
+            local s = net_history_s1:at(i)
+            if s then sum = sum + s.stored; count = count + 1 end
+        end
+        if count > 0 then
+            net_history_m1:push({ ts = now_ms, stored = sum / count })
+        end
+        net_samples_since_1m = 0
+        net_samples_since_5m = net_samples_since_5m + 1
+    end
+    if net_samples_since_5m >= 5 then
+        local sum, count = 0, 0
+        for i = 1, math.min(5, net_history_m1:len()) do
+            local s = net_history_m1:at(i)
+            if s then sum = sum + s.stored; count = count + 1 end
+        end
+        if count > 0 then
+            net_history_m5:push({ ts = now_ms, stored = sum / count })
+        end
+        net_samples_since_5m = 0
+    end
+end
+
+-- Flatten a ring into {values=..., ts=..., interval_ms=...} (oldest->newest)
+-- so rednet serialisation is compact and the panel can index by position.
+local function serialize_ring(ring, interval_ms)
+    local values, ts_arr = {}, {}
+    for s in ring:iter() do
+        values[#values + 1] = s.stored
+        ts_arr[#ts_arr + 1] = s.ts
+    end
+    return { interval_ms = interval_ms, values = values, ts = ts_arr }
 end
 
 -- --- aggregation ---------------------------------------------------------
@@ -419,11 +471,23 @@ local function update_ui()
 end
 
 local function broadcast_aggregate()
-    local payload = aggregate(os.epoch("utc"))
+    local now_ms  = os.epoch("utc")
+    local payload = aggregate(now_ms)
+
+    -- Snapshot the network totals into rollup rings, then attach tiered
+    -- series to the outgoing packet so panels can render charts without
+    -- duplicating the history themselves.
+    push_network_sample(payload.network_stored or 0, now_ms)
+    payload.history = {
+        s1 = serialize_ring(net_history_s1, 1000),
+        m1 = serialize_ring(net_history_m1, 60 * 1000),
+        m5 = serialize_ring(net_history_m5, 5 * 60 * 1000),
+    }
+
     local pkt = comms.packet(comms.KIND.CORE_AGGREGATE, comms.ROLE.CORE, payload)
     rednet.broadcast(pkt, comms.PROTO_DATA)
     trackers.aggregates_sent    = trackers.aggregates_sent + 1
-    trackers.last_broadcast_ms  = os.epoch("utc")
+    trackers.last_broadcast_ms  = now_ms
     trackers.last_aggregate     = payload
 end
 

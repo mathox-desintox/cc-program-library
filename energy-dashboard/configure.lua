@@ -145,6 +145,9 @@ local PANEL_PAGE = component_page("panel", "Panel", {
       help = "After this many ms with no aggregate from the core, the status pill shows STALE. Default 5000." },
     { key = "theme",     label = "theme",     kind = "text",
       help = "Named colour palette. Only 'default' is defined right now." },
+    { key = "default_horizon", label = "default_horizon", kind = "enum",
+      options = { "m1", "m5", "m15", "h1", "h8", "h24" },
+      help = "Which time window the chart/stats use at startup. Click tabs on the monitor to change live." },
 })
 
 -- --- installed-components detection -------------------------------------

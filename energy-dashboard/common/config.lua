@@ -36,11 +36,12 @@ M.DEFAULTS = {
         log_file              = "/edash_core.log",
     },
     panel = {
-        monitor    = nil,      -- auto-pick first monitor if nil
-        rate_unit  = "t",      -- "t" (ticks, MC native) or "s"
-        redraw_ms  = 250,
-        stale_ms   = 5000,
-        theme      = "default",
+        monitor          = nil,        -- auto-pick first monitor if nil
+        rate_unit        = "t",        -- "t" (ticks, MC native) or "s"
+        redraw_ms        = 250,
+        stale_ms         = 5000,
+        theme            = "default",
+        default_horizon  = "m5",       -- m1/m5/m15/h1/h8/h24 (clickable tab)
     },
 }
 
