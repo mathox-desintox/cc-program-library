@@ -142,6 +142,37 @@ local function clear_screen()
     term.clear()
 end
 
+-- Render a button at (x, y). Returns { x, y, w, action? }.
+local function draw_pill(x, y, label, bg_color, fg_color, disabled)
+    local text = "[ " .. label .. " ]"
+    term.setCursorPos(x, y)
+    if disabled then
+        set_bg(colors.gray); set_fg(colors.lightGray)
+    else
+        set_bg(bg_color); set_fg(fg_color)
+    end
+    term.write(text)
+    return { x = x, y = y, w = #text, disabled = disabled }
+end
+
+-- Draw a bottom-row [ continue ] button with a matching hint, then block
+-- until the user either presses a key or clicks. Used by every "return to
+-- menu" screen so they feel like the rest of the click-driven UI.
+local function press_continue(hint)
+    local _, h = term.getSize()
+    fill_line(h, T.bg)
+    local btn = draw_pill(2, h, "continue", colors.cyan, colors.black, false)
+    set_bg(T.bg); set_fg(T.fg)
+    if hint and #hint > 0 then
+        write_at(btn.x + btn.w + 2, h, hint, T.dim, T.bg)
+    end
+    while true do
+        local event, p1 = os.pullEvent()
+        if event == "key" or event == "char" then return end
+        if event == "mouse_click" and p1 == 1 then return end
+    end
+end
+
 -- --- menu item ----------------------------------------------------------
 
 -- Item shape:
@@ -446,8 +477,7 @@ local function install_component(manifest, name)
                 fill_line(y + 1 + li, T.bg)
                 write_at(2, y + 1 + li, line, T.err, T.bg)
             end
-            draw_footer_bar(" press any key to return to menu")
-            os.pullEvent("key")
+            press_continue("return to menu")
             return false
         end
     end
@@ -485,8 +515,7 @@ local function install_component(manifest, name)
         write_at(2, hint_y + li - 1, line, T.dim, T.bg)
     end
 
-    draw_footer_bar(" press any key to return to menu")
-    os.pullEvent("key")
+    press_continue("return to menu")
     return true
 end
 
@@ -513,8 +542,7 @@ local function uninstall_component(name)
     fill_line(y + 1, T.bg)
     write_at(2, y + 1, "Done. /startup.lua left in place in case other components remain.",
              T.ok, T.bg)
-    draw_footer_bar(" press any key")
-    os.pullEvent("key")
+    press_continue("return to menu")
     return true
 end
 
@@ -528,8 +556,7 @@ local function update_all(manifest)
         fill_line(2, T.bg)
         write_at(2, 4, "nothing installed yet - pick [install] from the menu first.",
                  T.dim, T.bg)
-        draw_footer_bar(" press any key")
-        os.pullEvent("key")
+        press_continue("return to menu")
         return
     end
     for _, n in ipairs(names) do install_component(manifest, n) end
@@ -597,8 +624,7 @@ local function confirm_cleanup(installed_files, aux_files, dirs)
     if total == 0 and #dirs == 0 then
         fill_line(y + 1, T.bg)
         write_at(2, y + 1, "nothing to clean up on this computer.", T.dim, T.bg)
-        draw_footer_bar(" press any key")
-        os.pullEvent("key")
+        press_continue("return to menu")
         return false
     end
 
@@ -625,17 +651,41 @@ local function confirm_cleanup(installed_files, aux_files, dirs)
     end
 
     -- red banner at the bottom
+    fill_line(h - 3, T.bg)
+    write_at(2, h - 3, "This is permanent. Installed components will be removed,",
+        T.err, T.bg)
     fill_line(h - 2, T.bg)
-    write_at(2, h - 2, "This is permanent. Installed components will be removed,",
-        T.err, T.bg)
-    fill_line(h - 1, T.bg)
-    write_at(2, h - 1, "state + logs wiped, startup hook deleted.",
+    write_at(2, h - 2, "state + logs wiped, startup hook deleted.",
         T.err, T.bg)
 
-    draw_footer_bar(" y confirm delete    any other key cancel")
+    -- Button strip on the bottom row. `cancel` is the safer default, so it
+    -- maps to Enter/Esc/Q/N; `delete` requires an explicit click or Y.
+    fill_line(h, T.bg)
+    local btns = {}
+    local b = draw_pill(2, h, "cancel", colors.gray, colors.white, false)
+    b.action = "cancel"; btns[#btns + 1] = b
+    b = draw_pill(2 + b.w + 2, h, "delete everything", colors.red, colors.white, false)
+    b.action = "delete"; btns[#btns + 1] = b
+    set_bg(T.bg); set_fg(T.fg)
 
-    local _, char = os.pullEvent("char")
-    return char == "y" or char == "Y"
+    while true do
+        local event, p1, p2, p3 = os.pullEvent()
+        if event == "key" then
+            if p1 == keys.y then return true end
+            if p1 == keys.enter or p1 == keys.escape or p1 == keys.q or p1 == keys.n then
+                return false
+            end
+        elseif event == "char" then
+            if p1 == "y" or p1 == "Y" then return true end
+            if p1 == "n" or p1 == "N" then return false end
+        elseif event == "mouse_click" and p1 == 1 then
+            for _, bb in ipairs(btns) do
+                if p3 == bb.y and p2 >= bb.x and p2 < bb.x + bb.w then
+                    return bb.action == "delete"
+                end
+            end
+        end
+    end
 end
 
 -- Perform the deletion. Returns (n_deleted, n_errors).
@@ -677,8 +727,7 @@ local function perform_cleanup(installed_files, aux_files, dirs)
     write_at(2, h - 2,
         string.format("cleanup done.  deleted: %d   errors: %d", deleted, errors),
         errors == 0 and T.ok or T.warn, T.bg)
-    draw_footer_bar(" press any key")
-    os.pullEvent("key")
+    press_continue("return to menu")
     return deleted, errors
 end
 
@@ -786,19 +835,6 @@ local function status_line(manifest)
         tostring(manifest.version or "?"), n)
 end
 
--- Render a button at (x, y). Returns { x, y, w, action? }.
-local function draw_pill(x, y, label, bg_color, fg_color, disabled)
-    local text = "[ " .. label .. " ]"
-    term.setCursorPos(x, y)
-    if disabled then
-        set_bg(colors.gray); set_fg(colors.lightGray)
-    else
-        set_bg(bg_color); set_fg(fg_color)
-    end
-    term.write(text)
-    return { x = x, y = y, w = #text, disabled = disabled }
-end
-
 -- Quit dialog. If anything is installed we offer a Reboot button alongside
 -- a plain Quit-only button, defaulted to Reboot (Enter triggers it).
 -- Returns true if the caller should call os.reboot().
@@ -848,8 +884,7 @@ end
 local function main()
     local manifest = fetch_manifest()
     if not manifest then
-        draw_footer_bar(" press any key")
-        os.pullEvent("key")
+        press_continue()
         clear_screen(); return
     end
 

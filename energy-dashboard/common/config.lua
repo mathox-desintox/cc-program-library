@@ -118,13 +118,17 @@ function M.run_first_run_wizard(component_name)
     print("launching `configure` - save your settings, then this program will resume.")
     print("(press Ctrl+T in configure to skip; you can always run `configure` later)")
     sleep(1.5)
+    -- Write the sentinel BEFORE launching configure. If the user clicks
+    -- 'reboot now' inside configure we never return from shell.run, so any
+    -- post-launch bookkeeping would be skipped and the wizard would
+    -- re-trigger on every boot.
+    local f = fs.open(M.FIRST_RUN_FLAG, "w")
+    if f then f.writeLine(tostring(os.epoch("utc"))); f.close() end
     if fs.exists("configure") or fs.exists("configure.lua") then
         shell.run("configure")
     else
         print("(configure not installed - continuing with defaults)")
     end
-    local f = fs.open(M.FIRST_RUN_FLAG, "w")
-    if f then f.writeLine(tostring(os.epoch("utc"))); f.close() end
     return true
 end
 
