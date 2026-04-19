@@ -44,12 +44,12 @@ pastebin put edi.lua        # prints a code, e.g. "ABC12345"
 
 Note that code — that's your stable entry point from any new computer.
 
-> Until the user publishes a code here, the placeholder below is `<EDI-CODE>`.
+> Until the user publishes a code here, the placeholder below is `F3bHqTDi`.
 
 ### On each computer
 
 ```
-pastebin run <EDI-CODE>
+pastebin run F3bHqTDi
 ```
 
 Navigate the arrow-key menu, pick a component:
@@ -60,7 +60,7 @@ Navigate the arrow-key menu, pick a component:
 - `[update]    all installed` — re-fetch every installed component after you change the repo
 - `[uninstall] ...`        — list + remove any component's files
 
-After install you're shown the command to run (e.g. `collector`). On subsequent runs, just re-run `pastebin run <EDI-CODE>` → `[update]    all installed` to pull the latest.
+After install you're shown the command to run (e.g. `collector`). On subsequent runs, just re-run `pastebin run F3bHqTDi` → `[update]    all installed` to pull the latest.
 
 ### State file
 
