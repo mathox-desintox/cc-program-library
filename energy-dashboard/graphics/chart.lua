@@ -275,10 +275,14 @@ function M.hires_line_chart(mon, x, y, cell_w, cell_h, values, opts)
     local s = stats_sparse(values, cell_w)
     if not s then return nil end
 
-    -- Same auto-scale rules as line_chart: tight range for same-sign
-    -- series, zero-anchored for mixed signs.
+    -- Caller can pin the y range via opts.ymin/ymax (used when the chart
+    -- has dedicated axis labels that need to agree with the drawing). If
+    -- absent, fall back to the same auto-scale the non-hires variant
+    -- uses: tight for same-sign, zero-anchored for mixed signs.
     local vmin, vmax
-    if s.min >= 0 and s.max >= 0 and s.max > 0 then
+    if opts.ymin ~= nil and opts.ymax ~= nil then
+        vmin, vmax = opts.ymin, opts.ymax
+    elseif s.min >= 0 and s.max >= 0 and s.max > 0 then
         local pad = (s.max - s.min) * 0.1
         if pad <= 0 then pad = math.abs(s.max) * 0.05 + 1 end
         vmin = math.max(0, s.min - pad)
@@ -498,5 +502,10 @@ function M.signed_chart(mon, x, y, w, h, values, opts)
     mon.setBackgroundColor(bg)
     return s
 end
+
+-- Sparse-aware variant of `stats` — ignores nil gaps. Exposed for
+-- callers that bucket their data (rate charts, etc.) so they can
+-- compute their own y-axis range without duplicating the math.
+M.stats_sparse = stats_sparse
 
 return M

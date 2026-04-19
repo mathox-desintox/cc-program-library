@@ -16,7 +16,7 @@ local themes    = require("graphics.themes")
 local configlib = require("common.config")
 local status    = require("common.status")
 
-local COMPONENT_VERSION = "0.7.3"
+local COMPONENT_VERSION = "0.7.4"
 
 -- First-run wizard: auto-launch `configure` on first boot so the user
 -- picks which monitor + rate unit they want before we start drawing.
@@ -237,7 +237,11 @@ local function render(mon)
     local chart_bot = h - foot_lines - stats_lines - 1
     if chart_bot < chart_top then chart_bot = chart_top end
     local chart_h = chart_bot - chart_top + 1
-    local chart_x, chart_w = 2, w - 2
+    -- Reserve a left-side gutter for the y-axis labels (e.g. "+110 kFE/t"
+    -- at the top, "0 FE/t" at the bottom). 9 columns fits a formatted FE
+    -- rate at any SI magnitude plus a space before the chart.
+    local axis_w = 9
+    local chart_x, chart_w = 2 + axis_w, w - (2 + axis_w) - 1
 
     -- Bucket the stored series into exactly chart_w time buckets over
     -- the horizon's window, then diff adjacent buckets to get a per-
@@ -256,15 +260,50 @@ local function render(mon)
     local min_dt_ms           = (window_ms / chart_w) * 0.5
     local rates               = bucket_to_rates(bucket_v, bucket_ts, chart_w, min_dt_ms)
 
+    -- Pre-compute the y-axis range so the chart and the axis labels
+    -- agree. Rule per user spec:
+    --   all positive / zero      : vmin = 0, vmax = 1.125 * max
+    --   all negative             : vmin = 1.125 * min, vmax = 0
+    --   mixed                    : vmin = 1.125 * min, vmax = 1.125 * max
+    local rstats = chart.stats_sparse(rates, chart_w) or {}  -- nil when no data
+    local vmin, vmax = 0, 1
+    if rstats.n and rstats.n > 0 then
+        if rstats.min >= 0 then
+            vmin = 0
+            vmax = math.max(1, rstats.max * 1.125)
+        elseif rstats.max <= 0 then
+            vmin = rstats.min * 1.125
+            vmax = 0
+        else
+            vmin = rstats.min * 1.125
+            vmax = rstats.max * 1.125
+        end
+    end
+
+    -- Axis labels. Top label sits on chart_top, bottom on chart_bot so
+    -- they line up with the y-range passed to hires_line_chart. We strip
+    -- the "+" fmtRate prefix because the chart position already carries
+    -- the sign.
+    local function axis_label(rate_s)
+        if rate_s == 0 then return (RATE_UNIT == "t") and "0 FE/t" or "0 FE/s" end
+        local t = util.fmtRate(rate_s, RATE_UNIT)
+        if t:sub(1, 1) == "+" then t = t:sub(2) end
+        return t
+    end
+    gfx.write(mon, 2, chart_top, util.truncate(axis_label(vmax), axis_w), P.label, axis_w, gfx.ALIGN.RIGHT)
+    gfx.write(mon, 2, chart_bot, util.truncate(axis_label(vmin), axis_w), P.label, axis_w, gfx.ALIGN.RIGHT)
+
     -- Chart is always drawn. hires_line_chart uses CC's teletext block
     -- characters to get 2x horizontal and 3x vertical sub-pixel
     -- resolution vs. the old cell-sized line, so flat-ish rate curves
     -- actually show their small variations instead of quantising to
     -- the coarse cell grid.
     local s = chart.hires_line_chart(mon, chart_x, chart_top, chart_w, chart_h, rates, {
-        pos_color  = THEME.charging,
-        neg_color  = THEME.draining,
-        bg         = THEME.bg,
+        pos_color = THEME.charging,
+        neg_color = THEME.draining,
+        bg        = THEME.bg,
+        ymin      = vmin,
+        ymax      = vmax,
     })
 
     -- Data availability for the derived stats. We require the series to
