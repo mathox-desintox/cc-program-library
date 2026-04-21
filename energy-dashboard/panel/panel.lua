@@ -16,7 +16,7 @@ local themes    = require("graphics.themes")
 local configlib = require("common.config")
 local status    = require("common.status")
 
-local COMPONENT_VERSION = "0.8.5"
+local COMPONENT_VERSION = "0.8.6"
 
 -- First-run wizard: auto-launch `configure` on first boot so the user
 -- picks which monitor + rate unit they want before we start drawing.
@@ -192,21 +192,26 @@ end
 -- pulsed workloads.
 local OUTLIER_MULTIPLE = 50
 
+-- Returns (dropped_count, median, threshold) so callers can surface the
+-- filter's activity in debug logs without re-running the math.
 local function filter_outlier_rates(rates, width)
     local sorted = {}
     for b = 1, width do
         if rates[b] ~= nil then sorted[#sorted + 1] = math.abs(rates[b]) end
     end
-    if #sorted < 3 then return end
+    if #sorted < 3 then return 0 end
     table.sort(sorted)
     local median = sorted[math.ceil(#sorted / 2)]
-    if median <= 0 then return end
+    if median <= 0 then return 0 end
     local threshold = median * OUTLIER_MULTIPLE
+    local dropped = 0
     for b = 1, width do
         if rates[b] ~= nil and math.abs(rates[b]) > threshold then
             rates[b] = nil
+            dropped = dropped + 1
         end
     end
+    return dropped, median, threshold
 end
 
 
@@ -367,7 +372,12 @@ local function render(mon)
     -- Drop rate outliers BEFORE the cache update / chart render, so a
     -- single bad upstream sample doesn't briefly rescale the y-axis
     -- to a glitched ceiling or flash the peak stats.
-    filter_outlier_rates(rates, sub_w)
+    local dropped, med, thr   = filter_outlier_rates(rates, sub_w)
+    if DEBUG_LOGGING and dropped > 0 then
+        log.debug(string.format(
+            "[%s] outlier filter dropped %d rate(s) (median=%.3g threshold=%.3g)",
+            hz.key, dropped, med or 0, thr or 0))
+    end
 
     -- Y-axis range via nice-ceiling with hysteresis. The bounds snap to
     -- values of the form s * 10^n (s in {1,2,3,5,7}) so axis labels
@@ -616,7 +626,8 @@ end
 
 log.init("panel", DEBUG_LOGGING and log.LEVEL.DEBUG or log.LEVEL.INFO, "/edash_panel.log")
 log.silence_terminal(true)
-log.info("panel " .. COMPONENT_VERSION .. " starting")
+log.info("panel " .. COMPONENT_VERSION .. " starting"
+    .. (DEBUG_LOGGING and "  [debug_logging=on]" or ""))
 
 trackers.modem_sides = comms.open_all_modems()
 if #trackers.modem_sides == 0 then
@@ -669,8 +680,23 @@ parallel.waitForAny(
                     latest = msg.payload
                     latest_rx_ms = os.epoch("utc")
                     trackers.aggregates_rx = trackers.aggregates_rx + 1
+                    if DEBUG_LOGGING then
+                        local p = msg.payload
+                        local n_col = 0
+                        for _ in pairs(p.per_collector or {}) do n_col = n_col + 1 end
+                        local s1 = (p.history or {}).s1 or {}
+                        local s1_vals = s1.values or {}
+                        log.debug(string.format(
+                            "rx aggregate: stored=%s cap=%s collectors=%d s1_len=%d",
+                            tostring(p.network_stored or 0),
+                            tostring(p.network_capacity or 0),
+                            n_col, #s1_vals))
+                    end
                 else
                     trackers.packets_dropped = trackers.packets_dropped + 1
+                    if DEBUG_LOGGING then
+                        log.debug("dropped invalid / wrong-network packet")
+                    end
                 end
             end
         end
@@ -705,6 +731,7 @@ parallel.waitForAny(
                     if ty == r.y and tx >= r.x and tx < r.x + r.w then
                         selected_horizon = r.key
                         mark_event_t("horizon: " .. r.key)
+                        if DEBUG_LOGGING then log.debug("horizon -> " .. r.key) end
                         pcall(render, mon)
                         break
                     end
