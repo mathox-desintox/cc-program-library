@@ -18,7 +18,7 @@ configlib.run_first_run_wizard("collector")
 
 -- --- config --------------------------------------------------------------
 
-local COMPONENT_VERSION = "0.9.0"
+local COMPONENT_VERSION = "0.9.1"
 
 local all_cfg = configlib.load_all()
 local cfg     = all_cfg.collector or {}
@@ -276,10 +276,26 @@ local function main_loop()
                         local first = batch[1].stored
                         local last  = newest.stored
                         local dt_ms = newest.ts - batch[1].ts
+                        -- Count unique stored values + track the min/max in
+                        -- the batch. If AppliedFlux only updates its cached
+                        -- FE aggregate every N ticks (which AE2's cached
+                        -- inventory does NOT guarantee to refresh every
+                        -- tick), we'll see n=20 but unique=20/N - a strong
+                        -- signal that per-tick sampling is oversampling.
+                        local seen, unique = {}, 0
+                        local vmin, vmax = math.huge, -math.huge
+                        for _, s in ipairs(batch) do
+                            local v = s.stored
+                            if not seen[v] then seen[v] = true; unique = unique + 1 end
+                            if v < vmin then vmin = v end
+                            if v > vmax then vmax = v end
+                        end
                         log.debug(string.format(
-                            "batch n=%d skipped=%d dt_ms=%d first=%s last=%s delta=%s",
-                            #batch, skipped_in_batch, dt_ms,
+                            "batch n=%d unique=%d skipped=%d dt_ms=%d "
+                            .. "first=%s last=%s min=%s max=%s delta=%s",
+                            #batch, unique, skipped_in_batch, dt_ms,
                             tostring(first), tostring(last),
+                            tostring(vmin), tostring(vmax),
                             tostring(last - first)))
                     end
                     batch = {}
