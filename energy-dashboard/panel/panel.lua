@@ -16,7 +16,7 @@ local themes    = require("graphics.themes")
 local configlib = require("common.config")
 local status    = require("common.status")
 
-local COMPONENT_VERSION = "0.8.0"
+local COMPONENT_VERSION = "0.8.1"
 
 -- First-run wizard: auto-launch `configure` on first boot so the user
 -- picks which monitor + rate unit they want before we start drawing.
@@ -341,6 +341,13 @@ local function render(mon)
     -- 1.2x growth factor places typical data around 70-85% of the
     -- chart height (peaks can still reach the top but the whole
     -- vertical range is useful, not just the top strip).
+    --
+    -- An opposite-sign peak that's less than MINOR_RATIO of the
+    -- dominant peak is treated as a visual clip, NOT a reason to drop
+    -- into mixed-sign layout. Without this a mostly-charging grid with
+    -- occasional one-tick consumer dips would shift the bottom label
+    -- off 0 every time `rstats.min` dipped below 0 by anything.
+    local MINOR_RATIO = 0.1
     local rstats = chart.stats_sparse(rates, sub_w) or {}    -- nil when no data
     local vmin, vmax = 0, 1
 
@@ -348,16 +355,30 @@ local function render(mon)
     if rstats.n and rstats.n > 0 then
         local pos_peak = math.max(rstats.max or 0, 0)
         local neg_peak = math.abs(math.min(rstats.min or 0, 0))
-        cache.pos = pos_peak > 0 and stable_ceiling(cache.pos, pos_peak, 1.2) or 0
-        cache.neg = neg_peak > 0 and stable_ceiling(cache.neg, neg_peak, 1.2) or 0
+
+        if pos_peak > 0 and neg_peak < pos_peak * MINOR_RATIO then
+            -- Dominant positive series: pin bottom at 0, forget any
+            -- cached negative ceiling (tiny dips will clip visually).
+            cache.pos = stable_ceiling(cache.pos, pos_peak, 1.2)
+            cache.neg = 0
+        elseif neg_peak > 0 and pos_peak < neg_peak * MINOR_RATIO then
+            -- Dominant negative series: pin top at 0.
+            cache.pos = 0
+            cache.neg = stable_ceiling(cache.neg, neg_peak, 1.2)
+        else
+            -- Genuinely mixed - show both sides, each side independently
+            -- stabilised.
+            cache.pos = pos_peak > 0 and stable_ceiling(cache.pos, pos_peak, 1.2) or 0
+            cache.neg = neg_peak > 0 and stable_ceiling(cache.neg, neg_peak, 1.2) or 0
+        end
         vmax_cache[selected_horizon] = cache
 
-        if (rstats.min or 0) >= 0 then
-            vmin, vmax = 0, math.max(1, cache.pos)
-        elseif (rstats.max or 0) <= 0 then
-            vmin, vmax = -cache.neg, 0
-        else
+        if cache.pos > 0 and cache.neg > 0 then
             vmin, vmax = -cache.neg, cache.pos
+        elseif cache.pos > 0 then
+            vmin, vmax = 0, cache.pos
+        elseif cache.neg > 0 then
+            vmin, vmax = -cache.neg, 0
         end
     end
 
