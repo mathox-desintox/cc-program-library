@@ -15,7 +15,7 @@ local util      = require("common.util")
 local configlib = require("common.config")
 local status    = require("common.status")
 
-local COMPONENT_VERSION = "0.7.2"
+local COMPONENT_VERSION = "0.7.7"
 
 -- First-run wizard: auto-launch `configure` on first boot so intervals,
 -- state-file path, and log-file path can be adjusted before anything
@@ -103,25 +103,78 @@ local net_samples_since_6h = 0
 
 -- --- disk persistence ----------------------------------------------------
 
--- We persist ONLY lifetime counters + per-collector produced/consumed. The
--- in-memory histories are re-populated from live data after restart; a
--- history-gap during downtime is acceptable.
+-- We persist lifetime counters, every network-wide rollup ring + its
+-- since-rollup counters, and each collector's per-collector rings +
+-- rollup counters + last_tick_stored. On restart the rings hydrate
+-- from disk so the panel's long-horizon charts don't reset to empty.
+-- A real time gap appears between the last saved sample and the first
+-- fresh one; the panel's bucketing handles that naturally (the gap
+-- shows as one averaged rate bucket across the downtime).
+
+-- Serialise a ring into a plain { values = {...}, ts = {...} } table
+-- (oldest -> newest). Reuses the wire format we already use for the
+-- aggregate payload so there's only one ring format in the project.
+local function dump_ring(ring)
+    local values, ts_arr = {}, {}
+    for s in ring:iter() do
+        values[#values + 1] = s.stored
+        ts_arr[#ts_arr + 1] = s.ts
+    end
+    return { values = values, ts = ts_arr }
+end
+
+-- Push the saved entries back into an empty ring in oldest->newest
+-- order. Silently skips malformed entries so a partial / truncated
+-- state file still yields a working (if shorter) history.
+local function hydrate_ring(ring, saved)
+    if type(saved) ~= "table" or type(saved.values) ~= "table" then return end
+    local vals, ts_arr = saved.values, saved.ts
+    if type(ts_arr) ~= "table" then return end
+    for i = 1, #vals do
+        if vals[i] ~= nil and ts_arr[i] ~= nil then
+            ring:push({ ts = ts_arr[i], stored = vals[i] })
+        end
+    end
+end
 
 local function save_state()
+    local now_ms = os.epoch("utc")
     local snapshot = {
         lifetime = {
             produced_fe     = lifetime.produced_fe,
             consumed_fe     = lifetime.consumed_fe,
             uptime_prior_ms = lifetime.uptime_prior_ms
-                             + (os.epoch("utc") - lifetime.started_at_ms),
+                             + (now_ms - lifetime.started_at_ms),
+        },
+        net_history = {
+            s1 = dump_ring(net_history_s1),
+            m1 = dump_ring(net_history_m1),
+            m5 = dump_ring(net_history_m5),
+            h1 = dump_ring(net_history_h1),
+            h6 = dump_ring(net_history_h6),
+        },
+        net_rollup = {
+            since_1m = net_samples_since_1m,
+            since_5m = net_samples_since_5m,
+            since_1h = net_samples_since_1h,
+            since_6h = net_samples_since_6h,
         },
         collectors = {},
     }
     for id, entry in pairs(collectors) do
-        snapshot.collectors[id] = {
+        local saved = {
             lifetime_produced_fe = entry.lifetime_produced_fe,
             lifetime_consumed_fe = entry.lifetime_consumed_fe,
         }
+        if entry.history_1s then
+            saved.history_1s              = dump_ring(entry.history_1s)
+            saved.history_1m              = dump_ring(entry.history_1m)
+            saved.history_5m              = dump_ring(entry.history_5m)
+            saved.samples_since_1m_rollup = entry.samples_since_1m_rollup
+            saved.samples_since_5m_rollup = entry.samples_since_5m_rollup
+            saved.last_tick_stored        = entry.last_tick_stored
+        end
+        snapshot.collectors[id] = saved
     end
     local f = fs.open(STATE_FILE, "w")
     if not f then log.warn("could not open " .. STATE_FILE .. " for writing") return end
@@ -145,14 +198,33 @@ local function load_state()
         lifetime.consumed_fe     = snapshot.lifetime.consumed_fe or 0
         lifetime.uptime_prior_ms = snapshot.lifetime.uptime_prior_ms or 0
     end
-    -- Per-collector lifetime values seeded into their entries as they first
-    -- report in, via get_or_create_entry().
+    if type(snapshot.net_history) == "table" then
+        hydrate_ring(net_history_s1, snapshot.net_history.s1)
+        hydrate_ring(net_history_m1, snapshot.net_history.m1)
+        hydrate_ring(net_history_m5, snapshot.net_history.m5)
+        hydrate_ring(net_history_h1, snapshot.net_history.h1)
+        hydrate_ring(net_history_h6, snapshot.net_history.h6)
+    end
+    if type(snapshot.net_rollup) == "table" then
+        net_samples_since_1m = snapshot.net_rollup.since_1m or 0
+        net_samples_since_5m = snapshot.net_rollup.since_5m or 0
+        net_samples_since_1h = snapshot.net_rollup.since_1h or 0
+        net_samples_since_6h = snapshot.net_rollup.since_6h or 0
+    end
+    -- Per-collector values are staged onto a stub entry until the
+    -- collector reports back in; get_or_create_entry() promotes the
+    -- stub to a full entry and hydrates its rings at that point.
     if snapshot.collectors then
         for id, c in pairs(snapshot.collectors) do
-            -- Stash until we create the in-memory entry.
             collectors[id] = {
-                _restored_produced = c.lifetime_produced_fe or 0,
-                _restored_consumed = c.lifetime_consumed_fe or 0,
+                _restored_produced     = c.lifetime_produced_fe or 0,
+                _restored_consumed     = c.lifetime_consumed_fe or 0,
+                _restored_history_1s   = c.history_1s,
+                _restored_history_1m   = c.history_1m,
+                _restored_history_5m   = c.history_5m,
+                _restored_since_1m     = c.samples_since_1m_rollup,
+                _restored_since_5m     = c.samples_since_5m_rollup,
+                _restored_last_tick    = c.last_tick_stored,
             }
         end
     end
@@ -161,25 +233,30 @@ end
 -- --- ingest --------------------------------------------------------------
 
 local function get_or_create_entry(id)
-    local entry = collectors[id]
-    if entry and entry.history_1s then return entry end
-    local restored_produced = (entry and entry._restored_produced) or 0
-    local restored_consumed = (entry and entry._restored_consumed) or 0
-    entry = {
+    local stub = collectors[id]
+    if stub and stub.history_1s then return stub end
+    local entry = {
         last_msg = nil,
         last_ingest_ms = 0,
         history_1s = util.ring(60),
         history_1m = util.ring(60),
         history_5m = util.ring(288),
-        samples_since_1m_rollup = 0,
-        samples_since_5m_rollup = 0,
-        lifetime_produced_fe = restored_produced,
-        lifetime_consumed_fe = restored_consumed,
+        samples_since_1m_rollup = (stub and stub._restored_since_1m) or 0,
+        samples_since_5m_rollup = (stub and stub._restored_since_5m) or 0,
+        lifetime_produced_fe    = (stub and stub._restored_produced)  or 0,
+        lifetime_consumed_fe    = (stub and stub._restored_consumed)  or 0,
         -- Last-seen per-tick stored value, used for lifetime delta
-        -- accounting across batched packets. Starts nil so the very
-        -- first sample doesn't synthesise a spurious delta.
-        last_tick_stored = nil,
+        -- accounting across batched packets. Starts from the persisted
+        -- value if we have one so no energy is double-counted across a
+        -- restart, else nil so the very first sample doesn't
+        -- synthesise a spurious delta.
+        last_tick_stored        = stub and stub._restored_last_tick,
     }
+    if stub then
+        hydrate_ring(entry.history_1s, stub._restored_history_1s)
+        hydrate_ring(entry.history_1m, stub._restored_history_1m)
+        hydrate_ring(entry.history_5m, stub._restored_history_5m)
+    end
     collectors[id] = entry
     log.info("collector " .. id .. " registered")
     return entry

@@ -16,7 +16,7 @@ local themes    = require("graphics.themes")
 local configlib = require("common.config")
 local status    = require("common.status")
 
-local COMPONENT_VERSION = "0.7.6"
+local COMPONENT_VERSION = "0.7.7"
 
 -- First-run wizard: auto-launch `configure` on first boot so the user
 -- picks which monitor + rate unit they want before we start drawing.
@@ -144,30 +144,35 @@ local function bucket_stored(values, ts, width, window_ms)
 end
 
 -- Given per-bucket stored snapshots, produce a per-column rate series.
--- Rate at column b is (stored[b] - stored[prev]) / (ts[b] - ts[prev])
--- where prev is the most recent earlier bucket that had a sample. This
--- naturally stretches rate across holes (downtime) and produces nil for
--- columns that had no sample at all (so the chart renders a gap).
+-- For every pair of adjacent non-nil buckets (b_prev, b_curr) we compute
+-- the rate over that span and WRITE IT BACK across every bucket in the
+-- inclusive range [b_prev, b_curr]. That way sparse tier data (e.g. the
+-- m1 ring pushing a sample every 60s rendered into ~13s sub-buckets for
+-- the 15m horizon) still produces a continuous line instead of isolated
+-- dots separated by nil gaps. Leading and trailing buckets stay nil
+-- when there is no sample before / after them - the chart renders those
+-- as blank corners rather than extrapolating.
 --
 -- `min_dt_ms` rejects pairs whose wall-clock separation is suspiciously
--- short compared to the bucket width. Those cases produce wildly
--- inflated rate values because the numerator reflects real change over
--- roughly a bucket's worth of time while the denominator collapses to
--- a fraction of that. Typically seen at cold start when the first two
--- filled buckets have their representative samples near their shared
--- boundary.
+-- short compared to the bucket width. Typically only trips at cold
+-- start when the first two filled buckets have their representative
+-- samples near their shared boundary.
 local function bucket_to_rates(bucket_v, bucket_ts, width, min_dt_ms)
     local rates = {}
-    local prev_v, prev_ts
+
+    local filled = {}
     for b = 1, width do
-        if bucket_v[b] ~= nil then
-            if prev_v ~= nil and bucket_ts[b] > prev_ts then
-                local dt_ms = bucket_ts[b] - prev_ts
-                if not min_dt_ms or dt_ms >= min_dt_ms then
-                    rates[b] = (bucket_v[b] - prev_v) / (dt_ms / 1000)
-                end
+        if bucket_v[b] ~= nil then filled[#filled + 1] = b end
+    end
+
+    for i = 2, #filled do
+        local b_prev, b_curr = filled[i - 1], filled[i]
+        local dt_ms = bucket_ts[b_curr] - bucket_ts[b_prev]
+        if dt_ms > 0 and (not min_dt_ms or dt_ms >= min_dt_ms) then
+            local rate = (bucket_v[b_curr] - bucket_v[b_prev]) / (dt_ms / 1000)
+            for fill = b_prev, b_curr do
+                rates[fill] = rate
             end
-            prev_v, prev_ts = bucket_v[b], bucket_ts[b]
         end
     end
     return rates
