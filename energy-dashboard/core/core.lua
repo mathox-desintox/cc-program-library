@@ -15,7 +15,7 @@ local util      = require("common.util")
 local configlib = require("common.config")
 local status    = require("common.status")
 
-local COMPONENT_VERSION = "0.8.0"
+local COMPONENT_VERSION = "0.9.1"
 
 -- First-run wizard: auto-launch `configure` on first boot so intervals,
 -- state-file path, and log-file path can be adjusted before anything
@@ -148,12 +148,19 @@ end
 -- Push the saved entries back into an empty ring in oldest->newest
 -- order. Silently skips malformed entries so a partial / truncated
 -- state file still yields a working (if shorter) history.
+--
+-- Also drops stored = 0 entries: older core versions pushed those
+-- into the ring during cold start (before any collector had reported)
+-- and the panel's bucketing turned the 0 -> real-stored transition
+-- into a rate spike on the order of the whole network's stored. New
+-- code refuses to push those in the first place, but already-saved
+-- state files may still carry them, so we filter on load too.
 local function hydrate_ring(ring, saved)
     if type(saved) ~= "table" or type(saved.values) ~= "table" then return end
     local vals, ts_arr = saved.values, saved.ts
     if type(ts_arr) ~= "table" then return end
     for i = 1, #vals do
-        if vals[i] ~= nil and ts_arr[i] ~= nil then
+        if vals[i] ~= nil and ts_arr[i] ~= nil and vals[i] > 0 then
             ring:push({ ts = ts_arr[i], stored = vals[i] })
         end
     end
@@ -540,6 +547,7 @@ local function aggregate(now_ms)
         network_cells      = cells,
         network_online     = online and any_collector,
         network_stale      = (not any_collector) or stale,
+        any_collector      = any_collector,
         rates              = rates,
         eta_to_full_s      = eta_to_full,
         eta_to_empty_s     = eta_to_empty,
@@ -688,7 +696,19 @@ local function broadcast_aggregate()
     -- Feed the smoothed (batch-averaged) stored into the chart rings;
     -- the snappy single-tick `network_stored` stays on the panel's
     -- "Stored" readout.
-    push_network_sample(payload.network_stored_avg or payload.network_stored or 0, now_ms)
+    --
+    -- CRITICAL: skip the push when no collector has reported yet. On
+    -- cold start the aggregate returns network_stored_avg = 0 because
+    -- the stub entries hydrated from disk don't have last_msg. Pushing
+    -- that 0 to the ring, then the real stored a few seconds later,
+    -- creates an apparent stored-delta equal to the WHOLE NETWORK -
+    -- the panel's bucketing then produces a rate on the order of
+    -- network_capacity / bucket_ms ≈ 1e14 FE/s, which is exactly the
+    -- persistent outlier pattern we were catching with the 50x-median
+    -- filter. Same applies to any gap where all collectors went stale.
+    if payload.any_collector then
+        push_network_sample(payload.network_stored_avg or payload.network_stored or 0, now_ms)
+    end
     -- Ship wall-clock timestamps on EVERY tier. Reconstructing ts from
     -- interval_ms at the panel silently miscomputes rates whenever
     -- broadcast cadence jitters (sleep drift, server pause, core
