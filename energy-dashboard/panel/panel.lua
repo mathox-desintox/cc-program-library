@@ -16,7 +16,7 @@ local themes    = require("graphics.themes")
 local configlib = require("common.config")
 local status    = require("common.status")
 
-local COMPONENT_VERSION = "0.8.1"
+local COMPONENT_VERSION = "0.8.2"
 
 -- First-run wizard: auto-launch `configure` on first boot so the user
 -- picks which monitor + rate unit they want before we start drawing.
@@ -344,10 +344,18 @@ local function render(mon)
     --
     -- An opposite-sign peak that's less than MINOR_RATIO of the
     -- dominant peak is treated as a visual clip, NOT a reason to drop
-    -- into mixed-sign layout. Without this a mostly-charging grid with
-    -- occasional one-tick consumer dips would shift the bottom label
-    -- off 0 every time `rstats.min` dipped below 0 by anything.
-    local MINOR_RATIO = 0.1
+    -- into mixed-sign layout. 0.25 means the chart sticks to a 0-pinned
+    -- baseline until the minor side reaches a quarter of the dominant -
+    -- a mostly-charging grid with occasional short discharges keeps its
+    -- clean baseline, but a genuinely mixed workload still gets the
+    -- full top/bottom layout.
+    local MINOR_RATIO = 0.25
+    -- Growth factors: dominant-sign charts get 20% headroom so the data
+    -- sits in the upper 70-85% of the chart with room for spikes; a
+    -- mixed-sign chart can't afford that because both sides share the
+    -- same vertical space, so the ceiling hugs the peak more tightly.
+    local GROW_DOMINANT = 1.2
+    local GROW_MIXED    = 1.05
     local rstats = chart.stats_sparse(rates, sub_w) or {}    -- nil when no data
     local vmin, vmax = 0, 1
 
@@ -359,17 +367,18 @@ local function render(mon)
         if pos_peak > 0 and neg_peak < pos_peak * MINOR_RATIO then
             -- Dominant positive series: pin bottom at 0, forget any
             -- cached negative ceiling (tiny dips will clip visually).
-            cache.pos = stable_ceiling(cache.pos, pos_peak, 1.2)
+            cache.pos = stable_ceiling(cache.pos, pos_peak, GROW_DOMINANT)
             cache.neg = 0
         elseif neg_peak > 0 and pos_peak < neg_peak * MINOR_RATIO then
             -- Dominant negative series: pin top at 0.
             cache.pos = 0
-            cache.neg = stable_ceiling(cache.neg, neg_peak, 1.2)
+            cache.neg = stable_ceiling(cache.neg, neg_peak, GROW_DOMINANT)
         else
             -- Genuinely mixed - show both sides, each side independently
-            -- stabilised.
-            cache.pos = pos_peak > 0 and stable_ceiling(cache.pos, pos_peak, 1.2) or 0
-            cache.neg = neg_peak > 0 and stable_ceiling(cache.neg, neg_peak, 1.2) or 0
+            -- stabilised with a tighter ceiling since the chart has to
+            -- fit both halves in the same height.
+            cache.pos = pos_peak > 0 and stable_ceiling(cache.pos, pos_peak, GROW_MIXED) or 0
+            cache.neg = neg_peak > 0 and stable_ceiling(cache.neg, neg_peak, GROW_MIXED) or 0
         end
         vmax_cache[selected_horizon] = cache
 
@@ -407,6 +416,21 @@ local function render(mon)
     gfx.write(mon, chart_x, chart_bot,
         " " .. util.pad(axis_label(vmin, RATE_UNIT), axis_w) .. " ",
         P.label)
+
+    -- Mixed-sign layout: also label the 0 row so the user can read
+    -- where the baseline between charge and discharge sits. Skip the
+    -- label when it would overlap the top/bottom labels (< 2 cells of
+    -- clearance) - in that case the side label carries enough info.
+    if vmin < 0 and vmax > 0 and chart_h >= 5 then
+        local span = vmax - vmin
+        local frac_from_bottom = (0 - vmin) / span
+        local zero_y = chart_bot - math.floor(frac_from_bottom * (chart_h - 1) + 0.5)
+        if zero_y - chart_top >= 2 and chart_bot - zero_y >= 2 then
+            gfx.write(mon, chart_x, zero_y,
+                " " .. util.pad(axis_label(0, RATE_UNIT), axis_w) .. " ",
+                P.label)
+        end
+    end
 
     -- Data availability for the derived stats. We require the series to
     -- span at least the horizon's window before exposing rate / peak /

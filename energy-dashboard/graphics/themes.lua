@@ -21,7 +21,7 @@ M.default = {
     warn          = colors.yellow,
     critical      = colors.red,
     charging      = colors.lime,
-    draining      = colors.orange,
+    draining      = colors.red,
     stale         = colors.yellow,
     offline       = colors.red,
     -- bar colours
