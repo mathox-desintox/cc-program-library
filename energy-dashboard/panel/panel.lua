@@ -16,7 +16,7 @@ local themes    = require("graphics.themes")
 local configlib = require("common.config")
 local status    = require("common.status")
 
-local COMPONENT_VERSION = "0.7.7"
+local COMPONENT_VERSION = "0.7.8"
 
 -- First-run wizard: auto-launch `configure` on first boot so the user
 -- picks which monitor + rate unit they want before we start drawing.
@@ -188,6 +188,70 @@ local function window_rate(values, ts)
     return (values[#values] - values[1]) / dt_s
 end
 
+-- "Nice" y-axis ceiling: round `x` up to the next number of the form
+-- s * 10^n where s is one of {1, 2, 3, 5, 7}. These are the scale values
+-- engineers commonly use for axis ticks - they're short to print (max 1
+-- digit) and give predictable step sizes. Using the same ceiling for
+-- successive renders makes the axis labels stable across small data
+-- fluctuations instead of jittering every tick.
+local NICE_STEPS = { 1, 2, 3, 5, 7 }
+
+local function nice_ceil(x)
+    if x <= 0 then return 1 end
+    local exp = math.floor(math.log(x) / math.log(10))
+    local pow = 10 ^ exp
+    local mantissa = x / pow
+    for _, step in ipairs(NICE_STEPS) do
+        if mantissa <= step + 1e-9 then return step * pow end
+    end
+    return 10 * pow   -- rolls over into the next decade as s=1
+end
+
+-- Compact axis label for a rate in FE/s, always positive (sign is
+-- conveyed by the chart's colour / position). Reworks util.fmtRate's
+-- output so nice-ceiling values never get truncated at axis_w = 9:
+-- scales up the SI prefix until the display number is < 1000, then
+-- picks the shortest format that captures at least one significant
+-- digit. Examples: 200 MFE/s with /t unit -> "10 MFE/t", 5 kFE/s with
+-- /t unit -> "250 FE/t", 7 FE/s with /t unit -> "0.35 FE/t".
+local function axis_label(rate_s, unit)
+    local abs = math.abs(rate_s)
+    local suffix = (unit == "t") and "/t" or "/s"
+    if abs == 0 then return "0 FE" .. suffix end
+
+    local display = (unit == "t") and (abs / 20) or abs
+    local units = { "FE", "kFE", "MFE", "GFE", "TFE", "PFE", "EFE" }
+    local i = 1
+    while display >= 1000 and i < #units do
+        display = display / 1000
+        i = i + 1
+    end
+    if display >= 10 then
+        return string.format("%d %s%s", math.floor(display + 0.5), units[i], suffix)
+    elseif display >= 1 then
+        return string.format("%.1f %s%s", display, units[i], suffix)
+    end
+    return string.format("%.2f %s%s", display, units[i], suffix)
+end
+
+-- Per-horizon cache of the nice-ceiling positive and negative bounds,
+-- keeping the chart's y-range stable between renders. We only recompute
+-- when the peak either exceeds ~83% of the current ceiling (time to
+-- grow) or drops below ~30% of it (time to shrink). Any movement in
+-- between reuses the cached value so the axis labels don't flicker on
+-- every new sample.
+local vmax_cache = {}
+local GROW_AT   = 0.83
+local SHRINK_AT = 0.30
+
+local function stable_ceiling(current, peak, grow_factor)
+    if current == 0 then return nice_ceil(peak * grow_factor) end
+    if peak >= current * GROW_AT or peak <= current * SHRINK_AT then
+        return nice_ceil(peak * grow_factor)
+    end
+    return current
+end
+
 -- Build a tab strip starting at x,y. Returns {rects, width} so the
 -- touch handler can hit-test and the chart knows where to start.
 local function draw_tabs(mon, x, y, selected)
@@ -270,23 +334,29 @@ local function render(mon)
     local min_dt_ms           = (window_ms / sub_w) * 0.5
     local rates               = bucket_to_rates(bucket_v, bucket_ts, sub_w, min_dt_ms)
 
-    -- Pre-compute the y-axis range so the chart and the axis labels
-    -- agree. Rule per user spec:
-    --   all positive / zero      : vmin = 0, vmax = 1.125 * max
-    --   all negative             : vmin = 1.125 * min, vmax = 0
-    --   mixed                    : vmin = 1.125 * min, vmax = 1.125 * max
+    -- Y-axis range via nice-ceiling with hysteresis. The bounds snap to
+    -- values of the form s * 10^n (s in {1,2,3,5,7}) so axis labels
+    -- stay short + stable across small data fluctuations, while the
+    -- 1.2x growth factor places typical data around 70-85% of the
+    -- chart height (peaks can still reach the top but the whole
+    -- vertical range is useful, not just the top strip).
     local rstats = chart.stats_sparse(rates, sub_w) or {}    -- nil when no data
     local vmin, vmax = 0, 1
+
+    local cache = vmax_cache[selected_horizon] or { pos = 0, neg = 0 }
     if rstats.n and rstats.n > 0 then
-        if rstats.min >= 0 then
-            vmin = 0
-            vmax = math.max(1, rstats.max * 1.125)
-        elseif rstats.max <= 0 then
-            vmin = rstats.min * 1.125
-            vmax = 0
+        local pos_peak = math.max(rstats.max or 0, 0)
+        local neg_peak = math.abs(math.min(rstats.min or 0, 0))
+        cache.pos = pos_peak > 0 and stable_ceiling(cache.pos, pos_peak, 1.2) or 0
+        cache.neg = neg_peak > 0 and stable_ceiling(cache.neg, neg_peak, 1.2) or 0
+        vmax_cache[selected_horizon] = cache
+
+        if (rstats.min or 0) >= 0 then
+            vmin, vmax = 0, math.max(1, cache.pos)
+        elseif (rstats.max or 0) <= 0 then
+            vmin, vmax = -cache.neg, 0
         else
-            vmin = rstats.min * 1.125
-            vmax = rstats.max * 1.125
+            vmin, vmax = -cache.neg, cache.pos
         end
     end
 
@@ -303,21 +373,17 @@ local function render(mon)
         ymax      = vmax,
     })
 
-    -- Axis labels painted AFTER the chart: the label background mask a
-    -- few cells of chart at the top-left and bottom-left, which is a
-    -- worthwhile trade for keeping full horizontal resolution. The "+"
-    -- sign from fmtRate is stripped since the chart position conveys it.
-    local function axis_label(rate_s)
-        if rate_s == 0 then return (RATE_UNIT == "t") and "0 FE/t" or "0 FE/s" end
-        local t = util.fmtRate(rate_s, RATE_UNIT)
-        if t:sub(1, 1) == "+" then t = t:sub(2) end
-        return t
-    end
+    -- Axis labels painted AFTER the chart: the label mask a few cells
+    -- of chart at the top-left and bottom-left, which is a worthwhile
+    -- trade for keeping full horizontal resolution. `axis_label` uses
+    -- a compact nice-ceiling-aware format so labels like "200 MFE/t"
+    -- or "0 FE/t" always fit in axis_w columns without the "..."
+    -- truncation we had on "157.73 MFE/t".
     gfx.write(mon, chart_x, chart_top,
-        " " .. util.pad(util.truncate(axis_label(vmax), axis_w), axis_w) .. " ",
+        " " .. util.pad(axis_label(vmax, RATE_UNIT), axis_w) .. " ",
         P.label)
     gfx.write(mon, chart_x, chart_bot,
-        " " .. util.pad(util.truncate(axis_label(vmin), axis_w), axis_w) .. " ",
+        " " .. util.pad(axis_label(vmin, RATE_UNIT), axis_w) .. " ",
         P.label)
 
     -- Data availability for the derived stats. We require the series to
