@@ -18,7 +18,7 @@ configlib.run_first_run_wizard("collector")
 
 -- --- config --------------------------------------------------------------
 
-local COMPONENT_VERSION = "0.10.0"
+local COMPONENT_VERSION = "0.10.1"
 
 local all_cfg = configlib.load_all()
 local cfg     = all_cfg.collector or {}
@@ -59,10 +59,29 @@ end
 
 -- Per-tick stored read. On the cached API this is a ~microsecond
 -- volatile-field read; on the legacy API it costs 1 MC tick.
+--
+-- The cached path also gates on getCachedTick() to avoid a post-
+-- restart race: the mod's `cachedStored` field is initialised to 0
+-- and the server-tick handler populates it on the FIRST tick after
+-- a peripheral instance is created. A CC computer that happens to
+-- query in that sub-tick window would otherwise read 0 and push
+-- that through the whole pipeline - the network ring ends up with
+-- a spurious 0 next to real-stored values, and the panel's bucket
+-- math turns the 0->real transition into a rate on the order of
+-- the whole network. We skip the tick entirely until the mod
+-- reports a non-zero tick number.
 local function make_tick_stored(accessor, use_cached)
-    local method = use_cached and "getCachedEnergy" or "getEnergyLong"
+    if use_cached then
+        return function()
+            local tok, tnum = ppm.call(accessor, "getCachedTick")
+            if not tok or tnum == nil or tnum == 0 then return nil end
+            local ok, v = ppm.call(accessor, "getCachedEnergy")
+            if not ok then return nil end
+            return v
+        end
+    end
     return function()
-        local ok, v = ppm.call(accessor, method)
+        local ok, v = ppm.call(accessor, "getEnergyLong")
         if not ok then return nil end
         return v
     end
