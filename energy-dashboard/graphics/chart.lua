@@ -304,8 +304,16 @@ function M.hires_line_chart(mon, x, y, cell_w, cell_h, values, opts)
     local span = vmax - vmin
     if span <= 0 then span = 1 end
 
+    -- Clamp before rounding: values outside [vmin, vmax] (e.g. a small
+    -- negative dip the panel has decided to clip against a 0 baseline)
+    -- pin to the top/bottom edge rather than producing an out-of-range
+    -- row. Without the clamp, `pixels[r][sx] = sign` below errors on
+    -- the nil row and the render aborts mid-chart - that was the
+    -- intermittent black-chart bug on 5m / 15m horizons.
     local function row_for(v)
         local frac = (v - vmin) / span
+        if frac < 0 then frac = 0 end
+        if frac > 1 then frac = 1 end
         return sh - 1 - math.floor(frac * (sh - 1) + 0.5)
     end
 
