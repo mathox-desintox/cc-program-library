@@ -18,7 +18,7 @@ configlib.run_first_run_wizard("collector")
 
 -- --- config --------------------------------------------------------------
 
-local COMPONENT_VERSION = "0.9.1"
+local COMPONENT_VERSION = "0.10.0"
 
 local all_cfg = configlib.load_all()
 local cfg     = all_cfg.collector or {}
@@ -43,32 +43,60 @@ local function find_accessor()
     return ppm.find_one(PERIPHERAL_TYPE)
 end
 
--- Fast path: just the stored value. Called every tick so we want a
--- SINGLE peripheral call per iteration - earlier versions did six,
--- which pushed each loop to ~300ms and limited us to 3 samples/s even
--- at tick_seconds = 0.05. Returns nil if the call failed so the main
--- loop knows to drop (not zero) that tick.
-local function tick_stored(accessor)
-    local ok, v = ppm.call(accessor, "getEnergyLong")
-    if not ok then return nil end
-    return v
+-- Feature-detect the cached (non-mainThread) API from appflux-cc-patch
+-- 0.2.0+. When present every tick read is a simple cache lookup with
+-- no mainThread round-trip, so the collector can sample at the full
+-- 20 Hz configured by tick_seconds = 0.05. Falls back to the old
+-- mainThread methods on the 0.1.0 mod which caps us at ~8 Hz.
+local function detect_cached_api(accessor_name)
+    if not peripheral or not peripheral.getMethods then return false end
+    local methods = peripheral.getMethods(accessor_name) or {}
+    for _, m in ipairs(methods) do
+        if m == "getCachedEnergy" then return true end
+    end
+    return false
 end
 
--- Slow path: the metadata the packet also ships (capacity, online,
--- cellCount, string versions). Read once per broadcast window since
--- none of these change at per-tick rates.
-local function snapshot_meta(accessor)
+-- Per-tick stored read. On the cached API this is a ~microsecond
+-- volatile-field read; on the legacy API it costs 1 MC tick.
+local function make_tick_stored(accessor, use_cached)
+    local method = use_cached and "getCachedEnergy" or "getEnergyLong"
+    return function()
+        local ok, v = ppm.call(accessor, method)
+        if not ok then return nil end
+        return v
+    end
+end
+
+-- Metadata snapshot read once per broadcast. Matches the cached API
+-- fields when available; falls back to the legacy mainThread methods
+-- otherwise.
+local function make_snapshot_meta(accessor, use_cached)
     local function safe(method)
         local ok, v = ppm.call(accessor, method)
         return ok and v or nil
     end
-    return {
-        storedString   = safe("getEnergyString")       or "0",
-        capacity       = safe("getEnergyCapacityLong") or 0,
-        capacityString = safe("getEnergyCapacityString") or "0",
-        online         = safe("isOnline") == true,
-        cellCount      = safe("getNetworkFluxCellCount") or 0,
-    }
+    if use_cached then
+        return function()
+            local stored = safe("getCachedEnergy") or 0
+            return {
+                storedString   = safe("getCachedEnergyString")   or tostring(stored),
+                capacity       = safe("getCachedCapacity")       or 0,
+                capacityString = safe("getCachedCapacityString") or "0",
+                online         = safe("getCachedOnline") == true,
+                cellCount      = safe("getNetworkFluxCellCount") or 0,
+            }
+        end
+    end
+    return function()
+        return {
+            storedString   = safe("getEnergyString")       or "0",
+            capacity       = safe("getEnergyCapacityLong") or 0,
+            capacityString = safe("getEnergyCapacityString") or "0",
+            online         = safe("isOnline") == true,
+            cellCount      = safe("getNetworkFluxCellCount") or 0,
+        }
+    end
 end
 
 local function broadcast(reading)
@@ -212,12 +240,21 @@ local function main_loop()
             mark_event("peripheral wrapped at " .. tostring(name))
             log.info("peripheral wrapped at " .. tostring(name))
 
+            -- Pick fast-path (cached, non-mainThread) vs legacy API.
+            -- Cached API needs appflux-cc-patch >= 0.2.0 - when
+            -- present, tick reads are instant volatile-field lookups;
+            -- otherwise we fall back to the mainThread method and
+            -- top out at ~8 samples/sec regardless of tick_seconds.
+            local use_cached = detect_cached_api(name)
+            local tick_stored   = make_tick_stored(accessor, use_cached)
+            local snapshot_meta = make_snapshot_meta(accessor, use_cached)
+            log.info("read path: " .. (use_cached and "cached (fast)" or "mainThread (legacy)"))
+            mark_event("read path: " .. (use_cached and "cached" or "legacy"))
+
             -- Sample at TICK_SECONDS, buffer, broadcast at BROADCAST_SECONDS.
             -- The latest stored reading feeds the batch every tick; the
             -- slow-changing metadata (capacity, cellCount, online, ...)
-            -- is read ONCE per broadcast window rather than every tick,
-            -- because 6 peripheral calls per iteration limited us to
-            -- ~3 samples/sec regardless of TICK_SECONDS.
+            -- is read ONCE per broadcast window rather than every tick.
             --
             -- Ticks where the peripheral call fails are dropped from the
             -- batch rather than zeroed. Skip counts are surfaced on the
@@ -229,7 +266,7 @@ local function main_loop()
             local broadcast_ms = BROADCAST_SECONDS * 1000
 
             while ppm.is_live(name) do
-                local ok, stored = pcall(tick_stored, accessor)
+                local ok, stored = pcall(tick_stored)
                 if ok and stored ~= nil then
                     batch[#batch + 1] = { ts = os.epoch("utc"), stored = stored }
                 else
@@ -239,7 +276,7 @@ local function main_loop()
                         log.warn("tick_stored error: " .. tostring(stored))
                         mark_event("tick read error")
                     elseif DEBUG_LOGGING then
-                        log.debug("getEnergyLong failed, skipping this tick")
+                        log.debug("tick_stored returned nil, skipping this tick")
                     end
                 end
 
@@ -248,7 +285,7 @@ local function main_loop()
                     -- Slow snapshot ONCE per broadcast. If it fails, fall
                     -- back to the previous reading's metadata so we still
                     -- ship a packet instead of silently dropping it.
-                    local meta_ok, meta = pcall(snapshot_meta, accessor)
+                    local meta_ok, meta = pcall(snapshot_meta)
                     if not meta_ok or type(meta) ~= "table" then
                         meta = (trackers.last_reading and {
                             storedString   = trackers.last_reading.storedString,
