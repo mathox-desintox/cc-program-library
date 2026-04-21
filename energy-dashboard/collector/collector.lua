@@ -18,7 +18,7 @@ configlib.run_first_run_wizard("collector")
 
 -- --- config --------------------------------------------------------------
 
-local COMPONENT_VERSION = "0.10.1"
+local COMPONENT_VERSION = "0.11.0"
 
 local all_cfg = configlib.load_all()
 local cfg     = all_cfg.collector or {}
@@ -43,18 +43,33 @@ local function find_accessor()
     return ppm.find_one(PERIPHERAL_TYPE)
 end
 
--- Feature-detect the cached (non-mainThread) API from appflux-cc-patch
--- 0.2.0+. When present every tick read is a simple cache lookup with
--- no mainThread round-trip, so the collector can sample at the full
--- 20 Hz configured by tick_seconds = 0.05. Falls back to the old
--- mainThread methods on the 0.1.0 mod which caps us at ~8 Hz.
-local function detect_cached_api(accessor_name)
-    if not peripheral or not peripheral.getMethods then return false end
+-- Feature-detect the mod's API level. Three tiers:
+--
+--   "history" (patch 0.3.0+) : getStoredHistory(ticks) returns the
+--      whole window of per-tick samples in a single call. Collector
+--      needs exactly ONE peripheral call per broadcast to populate
+--      the samples array - no tick-by-tick polling, no CC sleep
+--      jitter, no cold-start race. The mod's own server-tick handler
+--      guarantees samples at a deterministic 20 Hz.
+--
+--   "cached"  (patch 0.2.0)  : getCachedEnergy/Capacity/Online do
+--      volatile-field reads without mainThread. Collector polls
+--      tick-by-tick at sleep(tick_seconds) and builds the batch
+--      locally.
+--
+--   "legacy"  (patch 0.1.0)  : only the mainThread methods. Each
+--      read yields for 1 MC tick, capping us at ~8 samples/sec.
+local function detect_api_level(accessor_name)
+    if not peripheral or not peripheral.getMethods then return "legacy" end
     local methods = peripheral.getMethods(accessor_name) or {}
+    local has_history, has_cached = false, false
     for _, m in ipairs(methods) do
-        if m == "getCachedEnergy" then return true end
+        if     m == "getStoredHistory" then has_history = true
+        elseif m == "getCachedEnergy"  then has_cached  = true end
     end
-    return false
+    if has_history then return "history" end
+    if has_cached  then return "cached"  end
+    return "legacy"
 end
 
 -- Per-tick stored read. On the cached API this is a ~microsecond
@@ -89,13 +104,14 @@ end
 
 -- Metadata snapshot read once per broadcast. Matches the cached API
 -- fields when available; falls back to the legacy mainThread methods
--- otherwise.
-local function make_snapshot_meta(accessor, use_cached)
+-- otherwise. The `history` API level shares the cached-API metadata
+-- methods since both come from the tick handler's cache.
+local function make_snapshot_meta(accessor, api_level)
     local function safe(method)
         local ok, v = ppm.call(accessor, method)
         return ok and v or nil
     end
-    if use_cached then
+    if api_level == "history" or api_level == "cached" then
         return function()
             local stored = safe("getCachedEnergy") or 0
             return {
@@ -116,6 +132,30 @@ local function make_snapshot_meta(accessor, use_cached)
             cellCount      = safe("getNetworkFluxCellCount") or 0,
         }
     end
+end
+
+-- On the `history` API level the collector runs on broadcast cadence
+-- only: each broadcast cycle fetches the last `n_ticks` ring samples
+-- in a SINGLE peripheral call and ships them as the batch. No
+-- tick-by-tick polling loop, no sleep(TICK_SECONDS) jitter, and no
+-- cold-start race (getStoredHistory returns an empty list until the
+-- server-tick handler has written at least one sample).
+local function fetch_history_batch(accessor, n_ticks)
+    local ok, history = pcall(ppm.call, accessor, "getStoredHistory", n_ticks)
+    if not ok or type(history) ~= "table" or #history == 0 then
+        return nil
+    end
+    -- Result from CC-Tweaked Map<String,Object> -> Lua table. We
+    -- only need the `stored` and `ts` fields; copy into the shape
+    -- the core's ingest loop already understands.
+    local batch = {}
+    for i = 1, #history do
+        local e = history[i]
+        if type(e) == "table" and e.stored and e.ts then
+            batch[#batch + 1] = { ts = e.ts, stored = e.stored }
+        end
+    end
+    return batch
 end
 
 local function broadcast(reading)
@@ -259,107 +299,121 @@ local function main_loop()
             mark_event("peripheral wrapped at " .. tostring(name))
             log.info("peripheral wrapped at " .. tostring(name))
 
-            -- Pick fast-path (cached, non-mainThread) vs legacy API.
-            -- Cached API needs appflux-cc-patch >= 0.2.0 - when
-            -- present, tick reads are instant volatile-field lookups;
-            -- otherwise we fall back to the mainThread method and
-            -- top out at ~8 samples/sec regardless of tick_seconds.
-            local use_cached = detect_cached_api(name)
-            local tick_stored   = make_tick_stored(accessor, use_cached)
-            local snapshot_meta = make_snapshot_meta(accessor, use_cached)
-            log.info("read path: " .. (use_cached and "cached (fast)" or "mainThread (legacy)"))
-            mark_event("read path: " .. (use_cached and "cached" or "legacy"))
+            -- Pick API tier. See detect_api_level for what each
+            -- means. The "history" tier collapses the entire inner
+            -- loop into one peripheral call per broadcast, so we run
+            -- a completely different cycle below.
+            local api_level = detect_api_level(name)
+            local snapshot_meta = make_snapshot_meta(accessor, api_level)
+            log.info("read path: " .. api_level)
+            mark_event("read path: " .. api_level)
 
-            -- Sample at TICK_SECONDS, buffer, broadcast at BROADCAST_SECONDS.
-            -- The latest stored reading feeds the batch every tick; the
-            -- slow-changing metadata (capacity, cellCount, online, ...)
-            -- is read ONCE per broadcast window rather than every tick.
-            --
-            -- Ticks where the peripheral call fails are dropped from the
-            -- batch rather than zeroed. Skip counts are surfaced on the
-            -- status canvas, shipped in the payload for the core, and
-            -- (when debug_logging) logged per flush.
-            local batch = {}
-            local skipped_in_batch = 0
-            local last_broadcast_ms = os.epoch("utc")
-            local broadcast_ms = BROADCAST_SECONDS * 1000
+            -- Shared helper to build + broadcast a payload from an
+            -- already-assembled `batch` (array of {ts, stored}). Used
+            -- by both the history path (batch comes from one call)
+            -- and the legacy/cached path (batch accumulated tick by
+            -- tick). `skipped` is passed through to the core for
+            -- diagnostics.
+            local function broadcast_batch(batch, skipped, now_ms)
+                local meta_ok, meta = pcall(snapshot_meta)
+                if not meta_ok or type(meta) ~= "table" then
+                    meta = (trackers.last_reading and {
+                        storedString   = trackers.last_reading.storedString,
+                        capacity       = trackers.last_reading.capacity,
+                        capacityString = trackers.last_reading.capacityString,
+                        online         = trackers.last_reading.online,
+                        cellCount      = trackers.last_reading.cellCount,
+                    }) or {}
+                end
+                local newest = batch[#batch]
+                local payload = {}
+                for k, v in pairs(meta) do payload[k] = v end
+                payload.stored  = newest.stored
+                payload.samples = batch
+                payload.skipped = skipped
+                broadcast(payload)
 
-            while ppm.is_live(name) do
-                local ok, stored = pcall(tick_stored)
-                if ok and stored ~= nil then
-                    batch[#batch + 1] = { ts = os.epoch("utc"), stored = stored }
-                else
-                    skipped_in_batch = skipped_in_batch + 1
-                    trackers.total_skipped = (trackers.total_skipped or 0) + 1
-                    if not ok then
-                        log.warn("tick_stored error: " .. tostring(stored))
-                        mark_event("tick read error")
+                trackers.packets_sent       = trackers.packets_sent + 1
+                trackers.last_send_ms       = now_ms
+                trackers.last_batch_size    = #batch
+                trackers.last_batch_skipped = skipped
+                trackers.last_reading       = payload
+                if DEBUG_LOGGING then
+                    local first = batch[1].stored
+                    local last  = newest.stored
+                    local dt_ms = newest.ts - batch[1].ts
+                    local seen, unique = {}, 0
+                    local vmin, vmax = math.huge, -math.huge
+                    for _, s in ipairs(batch) do
+                        local v = s.stored
+                        if not seen[v] then seen[v] = true; unique = unique + 1 end
+                        if v < vmin then vmin = v end
+                        if v > vmax then vmax = v end
+                    end
+                    log.debug(string.format(
+                        "batch n=%d unique=%d skipped=%d dt_ms=%d "
+                        .. "first=%s last=%s min=%s max=%s delta=%s",
+                        #batch, unique, skipped, dt_ms,
+                        tostring(first), tostring(last),
+                        tostring(vmin), tostring(vmax),
+                        tostring(last - first)))
+                end
+            end
+
+            if api_level == "history" then
+                -- Broadcast cadence drives the loop directly. Each
+                -- iteration: sleep for broadcast_seconds, then fetch
+                -- the last (broadcast_seconds * 20 ticks) ring
+                -- samples in one call. Empty result means the mod
+                -- hasn't populated yet - skip this cycle, try again.
+                local ticks_per_broadcast = math.max(1, math.floor(BROADCAST_SECONDS * 20 + 0.5))
+                while ppm.is_live(name) do
+                    local now_ms = os.epoch("utc")
+                    local batch = fetch_history_batch(accessor, ticks_per_broadcast)
+                    if batch and #batch > 0 then
+                        broadcast_batch(batch, 0, now_ms)
                     elseif DEBUG_LOGGING then
-                        log.debug("tick_stored returned nil, skipping this tick")
+                        log.debug("getStoredHistory returned empty; waiting for cache")
                     end
+                    sleep(BROADCAST_SECONDS)
                 end
+            else
+                -- Legacy / cached path: tick-by-tick polling loop.
+                -- Builds the batch locally, broadcasts when
+                -- broadcast_seconds has elapsed. Subject to CC
+                -- sleep() jitter which gives us 19-20 samples per
+                -- 1s broadcast even at tick_seconds = 0.05.
+                local tick_stored = make_tick_stored(accessor, api_level == "cached")
+                local batch = {}
+                local skipped_in_batch = 0
+                local last_broadcast_ms = os.epoch("utc")
+                local broadcast_ms = BROADCAST_SECONDS * 1000
 
-                local now_ms = os.epoch("utc")
-                if #batch > 0 and (now_ms - last_broadcast_ms) >= broadcast_ms then
-                    -- Slow snapshot ONCE per broadcast. If it fails, fall
-                    -- back to the previous reading's metadata so we still
-                    -- ship a packet instead of silently dropping it.
-                    local meta_ok, meta = pcall(snapshot_meta)
-                    if not meta_ok or type(meta) ~= "table" then
-                        meta = (trackers.last_reading and {
-                            storedString   = trackers.last_reading.storedString,
-                            capacity       = trackers.last_reading.capacity,
-                            capacityString = trackers.last_reading.capacityString,
-                            online         = trackers.last_reading.online,
-                            cellCount      = trackers.last_reading.cellCount,
-                        }) or {}
-                    end
-
-                    local newest = batch[#batch]
-                    local payload = {}
-                    for k, v in pairs(meta) do payload[k] = v end
-                    payload.stored  = newest.stored
-                    payload.samples = batch
-                    payload.skipped = skipped_in_batch
-                    broadcast(payload)
-
-                    trackers.packets_sent       = trackers.packets_sent + 1
-                    trackers.last_send_ms       = now_ms
-                    trackers.last_batch_size    = #batch
-                    trackers.last_batch_skipped = skipped_in_batch
-                    trackers.last_reading       = payload
-                    if DEBUG_LOGGING then
-                        local first = batch[1].stored
-                        local last  = newest.stored
-                        local dt_ms = newest.ts - batch[1].ts
-                        -- Count unique stored values + track the min/max in
-                        -- the batch. If AppliedFlux only updates its cached
-                        -- FE aggregate every N ticks (which AE2's cached
-                        -- inventory does NOT guarantee to refresh every
-                        -- tick), we'll see n=20 but unique=20/N - a strong
-                        -- signal that per-tick sampling is oversampling.
-                        local seen, unique = {}, 0
-                        local vmin, vmax = math.huge, -math.huge
-                        for _, s in ipairs(batch) do
-                            local v = s.stored
-                            if not seen[v] then seen[v] = true; unique = unique + 1 end
-                            if v < vmin then vmin = v end
-                            if v > vmax then vmax = v end
+                while ppm.is_live(name) do
+                    local ok, stored = pcall(tick_stored)
+                    if ok and stored ~= nil then
+                        batch[#batch + 1] = { ts = os.epoch("utc"), stored = stored }
+                    else
+                        skipped_in_batch = skipped_in_batch + 1
+                        trackers.total_skipped = (trackers.total_skipped or 0) + 1
+                        if not ok then
+                            log.warn("tick_stored error: " .. tostring(stored))
+                            mark_event("tick read error")
+                        elseif DEBUG_LOGGING then
+                            log.debug("tick_stored returned nil, skipping this tick")
                         end
-                        log.debug(string.format(
-                            "batch n=%d unique=%d skipped=%d dt_ms=%d "
-                            .. "first=%s last=%s min=%s max=%s delta=%s",
-                            #batch, unique, skipped_in_batch, dt_ms,
-                            tostring(first), tostring(last),
-                            tostring(vmin), tostring(vmax),
-                            tostring(last - first)))
                     end
-                    batch = {}
-                    skipped_in_batch = 0
-                    last_broadcast_ms = now_ms
-                end
 
-                sleep(TICK_SECONDS)
+                    local now_ms = os.epoch("utc")
+                    if #batch > 0 and (now_ms - last_broadcast_ms) >= broadcast_ms then
+                        broadcast_batch(batch, skipped_in_batch, now_ms)
+                        batch = {}
+                        skipped_in_batch = 0
+                        last_broadcast_ms = now_ms
+                    end
+
+                    sleep(TICK_SECONDS)
+                end
             end
             trackers.accessor_live = false
             set_status("RESCAN", colors.yellow)
