@@ -16,7 +16,7 @@ local themes    = require("graphics.themes")
 local configlib = require("common.config")
 local status    = require("common.status")
 
-local COMPONENT_VERSION = "0.7.9"
+local COMPONENT_VERSION = "0.8.0"
 
 -- First-run wizard: auto-launch `configure` on first boot so the user
 -- picks which monitor + rate unit they want before we start drawing.
@@ -457,7 +457,9 @@ local term_ui = {
     right_header = "net: " .. NETWORK_ID,
     groups       = {},
     footer       = "",
+    active_tab   = 1,
 }
+local status_layout = nil
 
 local trackers = {
     modem_sides      = {},
@@ -607,13 +609,15 @@ parallel.waitForAny(
     function()
         while true do
             update_term_ui()
-            pcall(status.render, term, term_ui)
+            local ok, layout = pcall(status.render, term, term_ui)
+            if ok then status_layout = layout end
             sleep(0.5)
         end
     end,
 
     -- monitor_touch handler: switch horizons when the user taps a tab.
-    -- CC emits (event, side, x, y). We filter to our monitor's side.
+    -- CC emits (event, side, x, y) for monitor_touch. We filter to our
+    -- monitor's side so other monitors don't trip our handler.
     function()
         while true do
             local _, side, tx, ty = os.pullEvent("monitor_touch")
@@ -625,6 +629,28 @@ parallel.waitForAny(
                         pcall(render, mon)
                         break
                     end
+                end
+            end
+        end
+    end,
+
+    -- Terminal input: clickable tabs + keyboard nav on the panel's own
+    -- status canvas (separate from the chart monitor above).
+    function()
+        while true do
+            local ev, p1, p2, p3 = os.pullEvent()
+            if ev == "mouse_click" and p1 == 1 and status_layout then
+                local idx = status.hit_test_tab(status_layout, p2, p3)
+                if idx then
+                    term_ui.active_tab = idx
+                    pcall(status.render, term, term_ui)
+                end
+            elseif ev == "key" and status_layout then
+                local target = status.key_to_tab(term_ui.active_tab or 1,
+                                                 status_layout.group_count or 1, p1)
+                if target then
+                    term_ui.active_tab = target
+                    pcall(status.render, term, term_ui)
                 end
             end
         end

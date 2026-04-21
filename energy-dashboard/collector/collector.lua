@@ -18,7 +18,7 @@ configlib.run_first_run_wizard("collector")
 
 -- --- config --------------------------------------------------------------
 
-local COMPONENT_VERSION = "0.7.9"
+local COMPONENT_VERSION = "0.8.0"
 
 local all_cfg = configlib.load_all()
 local cfg     = all_cfg.collector or {}
@@ -80,7 +80,9 @@ local ui = {
     right_header = "net: " .. NETWORK_ID,
     groups       = {},
     footer       = "",
+    active_tab   = 1,
 }
+local status_layout = nil
 
 -- Trackers updated by the main loop, rendered into ui.groups by update_ui().
 local trackers = {
@@ -280,9 +282,32 @@ end
 local function render_loop()
     update_ui()
     while true do
-        pcall(status.render, term, ui)
+        local ok, layout = pcall(status.render, term, ui)
+        if ok then status_layout = layout end
         sleep(0.5)
     end
 end
 
-parallel.waitForAny(main_loop, render_loop)
+-- Clickable tabs + keyboard nav (tab / arrows / 1..9) for the status
+-- canvas. Shares `ui` + `status_layout` with render_loop.
+local function input_loop()
+    while true do
+        local ev, p1, p2, p3 = os.pullEvent()
+        if ev == "mouse_click" and p1 == 1 and status_layout then
+            local idx = status.hit_test_tab(status_layout, p2, p3)
+            if idx then
+                ui.active_tab = idx
+                pcall(status.render, term, ui)
+            end
+        elseif ev == "key" and status_layout then
+            local target = status.key_to_tab(ui.active_tab or 1,
+                                             status_layout.group_count or 1, p1)
+            if target then
+                ui.active_tab = target
+                pcall(status.render, term, ui)
+            end
+        end
+    end
+end
+
+parallel.waitForAny(main_loop, render_loop, input_loop)

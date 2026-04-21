@@ -15,7 +15,7 @@ local util      = require("common.util")
 local configlib = require("common.config")
 local status    = require("common.status")
 
-local COMPONENT_VERSION = "0.7.9"
+local COMPONENT_VERSION = "0.8.0"
 
 -- First-run wizard: auto-launch `configure` on first boot so intervals,
 -- state-file path, and log-file path can be adjusted before anything
@@ -562,7 +562,12 @@ local ui = {
     right_header = "net: " .. NETWORK_ID,
     groups       = {},
     footer       = "",
+    active_tab   = 1,  -- clicked tab or keyboard-selected group
 }
+-- Layout descriptor returned by the latest status.render - captured so
+-- the input loop below can hit-test mouse_click events against the tab
+-- strip.
+local status_layout = nil
 
 local function set_status(text, color) ui.status = { text = text, color = color } end
 local function mark_event(text)        trackers.last_event = text; ui.footer = text end
@@ -776,8 +781,35 @@ parallel.waitForAny(
     function()
         while true do
             update_ui()
-            pcall(status.render, term, ui)
+            local ok, layout = pcall(status.render, term, ui)
+            if ok then status_layout = layout end
             sleep(0.5)
+        end
+    end,
+
+    -- Input loop: clickable tabs + keyboard nav for the status canvas.
+    -- Runs alongside the render loop (they share the `ui` + `status_layout`
+    -- locals) and yields on whatever event comes in, so mouse_click /
+    -- key / char get handled without polling.
+    function()
+        while true do
+            local ev, p1, p2, p3 = os.pullEvent()
+            if ev == "mouse_click" and p1 == 1 and status_layout then
+                local idx = status.hit_test_tab(status_layout, p2, p3)
+                if idx then
+                    ui.active_tab = idx
+                    update_ui()
+                    pcall(status.render, term, ui)
+                end
+            elseif ev == "key" and status_layout then
+                local target = status.key_to_tab(ui.active_tab or 1,
+                                                 status_layout.group_count or 1, p1)
+                if target then
+                    ui.active_tab = target
+                    update_ui()
+                    pcall(status.render, term, ui)
+                end
+            end
         end
     end
 )

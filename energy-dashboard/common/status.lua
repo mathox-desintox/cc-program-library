@@ -114,12 +114,21 @@ end
 --   footer    = "last event text (dim)",
 -- }
 
+-- Render the canvas. When state.groups has more than one entry only
+-- ONE group's body is drawn at a time; the rest are reachable via a
+-- clickable tab strip on row 3 (plus keyboard left/right or 1..9). For
+-- a single-group state the tab strip is hidden and the group renders
+-- directly under the title / status pill, preserving the old layout.
+--
+-- The return value is a small layout descriptor the caller uses to
+-- route mouse_click events - see M.hit_test_tab below.
 function M.render(mon, state)
     local T = M.THEME
     local w, h = wsize(mon)
 
-    -- -- title bar --
     mon.setBackgroundColor(T.bg); mon.clear()
+
+    -- -- title bar --
     fill_line(mon, 1, T.title_bg, w)
     local title_text = (state.title or "?") .. (state.version and ("  v" .. state.version) or "")
     write_at(mon, 2, 1, title_text, T.title_fg, T.title_bg)
@@ -136,31 +145,108 @@ function M.render(mon, state)
             colors.black, state.status.color or T.ok)
     end
 
-    -- -- groups --
-    local y = 3
-    for _, g in ipairs(state.groups or {}) do
-        if y >= h - 1 then break end
-        section_line(mon, y, g.title or "", w); y = y + 1
-        for _, r in ipairs(g.rows or {}) do
-            if y >= h - 1 then break end
-            if r.bullet then
-                bullet_row(mon, 2, y, w, r.label, r.value, r.bullet, r.bullet_color)
+    local groups = state.groups or {}
+    local active = state.active_tab or 1
+    if active < 1 then active = 1 end
+    if active > #groups then active = #groups end
+
+    local tab_rects = {}
+    local body_y = 3
+
+    if #groups > 1 then
+        -- Tab strip on row 3. Selected tab is inverted (black on section
+        -- colour); unselected tabs render as dim [ label ] pills.
+        fill_line(mon, 3, T.bg, w)
+        local cx = 2
+        for i, g in ipairs(groups) do
+            local label = g.title or ("tab " .. i)
+            local txt = "[" .. label .. "]"
+            if cx + #txt > w then break end  -- overflow - drop rest
+            local fg, bg
+            if i == active then
+                fg, bg = colors.black, T.section
             else
-                row(mon, 2, y, w, r.label, r.value, r.value_color)
+                fg, bg = T.label, T.bg
             end
-            y = y + 1
+            write_at(mon, cx, 3, txt, fg, bg)
+            tab_rects[#tab_rects + 1] = {
+                x = cx, y = 3, w = #txt, index = i, title = label,
+            }
+            cx = cx + #txt + 1
         end
-        -- spacer between groups
-        if y < h - 1 then fill_line(mon, y, T.bg, w); y = y + 1 end
+        body_y = 5   -- one blank row under the tabs as a spacer
+        fill_line(mon, 4, T.bg, w)
+    end
+
+    -- -- body: only the active group --
+    local g = groups[active]
+    if g then
+        if body_y < h then
+            section_line(mon, body_y, g.title or "", w); body_y = body_y + 1
+        end
+        for _, r in ipairs(g.rows or {}) do
+            if body_y >= h - 1 then break end
+            if r.bullet then
+                bullet_row(mon, 2, body_y, w, r.label, r.value, r.bullet, r.bullet_color)
+            else
+                row(mon, 2, body_y, w, r.label, r.value, r.value_color)
+            end
+            body_y = body_y + 1
+        end
     end
 
     -- -- footer --
     fill_line(mon, h, T.footer_bg, w)
-    if state.footer then
-        write_at(mon, 2, h, truncate(state.footer, w - 3), T.footer_fg, T.footer_bg)
+    local footer_text = state.footer or ""
+    if #groups > 1 then
+        -- Hint at the tab nav when there's more than one; shown only if
+        -- there is room after the regular footer text.
+        local hint = "[tab \24\25 or click]"
+        local combined = footer_text
+        if combined == "" then combined = hint
+        elseif #combined + 3 + #hint <= w - 3 then
+            combined = combined .. "   " .. hint
+        end
+        write_at(mon, 2, h, truncate(combined, w - 3), T.footer_fg, T.footer_bg)
+    elseif footer_text ~= "" then
+        write_at(mon, 2, h, truncate(footer_text, w - 3), T.footer_fg, T.footer_bg)
     end
 
     mon.setBackgroundColor(T.bg); mon.setTextColor(T.fg)
+
+    return { tab_rects = tab_rects, active = active, group_count = #groups }
+end
+
+-- Hit-test a mouse_click against the tab strip. Returns the 1-based
+-- group index that was clicked, or nil when the click missed every
+-- tab (or when the layout wasn't captured from a prior render).
+function M.hit_test_tab(layout, x, y)
+    if type(layout) ~= "table" then return nil end
+    for _, r in ipairs(layout.tab_rects or {}) do
+        if y == r.y and x >= r.x and x < r.x + r.w then return r.index end
+    end
+    return nil
+end
+
+-- Keyboard helper: given the current active index + group count,
+-- resolve the usual navigation keys (tab / left / right / number keys
+-- / home / end) into a new active index. Returns nil when the key
+-- isn't one we care about so callers can keep chaining handlers.
+function M.key_to_tab(active, group_count, key)
+    if group_count <= 1 then return nil end
+    if keys and (key == keys.tab or key == keys.right) then
+        return ((active - 1 + 1) % group_count) + 1
+    elseif keys and key == keys.left then
+        return ((active - 1 - 1) % group_count) + 1
+    elseif keys and key == keys.home then
+        return 1
+    elseif keys and key == keys["end"] then
+        return group_count
+    elseif type(key) == "number" and key >= keys.one and key <= keys.nine then
+        local idx = key - keys.one + 1
+        if idx <= group_count then return idx end
+    end
+    return nil
 end
 
 -- --- convenience bullet constants ---------------------------------------
