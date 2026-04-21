@@ -16,7 +16,7 @@ local themes    = require("graphics.themes")
 local configlib = require("common.config")
 local status    = require("common.status")
 
-local COMPONENT_VERSION = "0.9.0"
+local COMPONENT_VERSION = "0.9.1"
 
 -- First-run wizard: auto-launch `configure` on first boot so the user
 -- picks which monitor + rate unit they want before we start drawing.
@@ -191,6 +191,38 @@ end
 -- (50x the median = clearly a glitch) without touching reasonable
 -- pulsed workloads.
 local OUTLIER_MULTIPLE = 50
+
+-- After filter_outlier_rates drops nil'd buckets, linearly interpolate
+-- across each run of nils using the nearest non-nil neighbours on
+-- either side. Keeps the chart's line visually continuous instead of
+-- letting the always-on baseline paint show through the gap and read
+-- as a dip. Leading / trailing nils (before the first or after the
+-- last real sample) stay nil so the chart's left / right edges still
+-- render as empty when the ring hasn't caught up.
+local function interpolate_gaps(rates, width)
+    local first_idx
+    for i = 1, width do
+        if rates[i] ~= nil then first_idx = i; break end
+    end
+    if not first_idx then return end
+
+    local i = first_idx
+    while i < width do
+        if rates[i] == nil then i = i + 1
+        else
+            local j = i + 1
+            while j <= width and rates[j] == nil do j = j + 1 end
+            if j > width then break end       -- trailing nils: leave alone
+            if j > i + 1 then
+                local a, b = rates[i], rates[j]
+                for k = i + 1, j - 1 do
+                    rates[k] = a + (b - a) * (k - i) / (j - i)
+                end
+            end
+            i = j
+        end
+    end
+end
 
 -- Returns (dropped_count, median, threshold, sample_values) so callers
 -- can surface the filter's activity in debug logs. `sample_values` is
@@ -378,6 +410,11 @@ local function render(mon)
     -- single bad upstream sample doesn't briefly rescale the y-axis
     -- to a glitched ceiling or flash the peak stats.
     local dropped, med, thr, samples = filter_outlier_rates(rates, sub_w)
+    -- Interpolate across the nil'd buckets so the chart line stays
+    -- visually continuous. Without this, the always-on baseline paint
+    -- in hires_line_chart shows through the nil gap and reads as a
+    -- sharp dip to the 0-rate baseline.
+    interpolate_gaps(rates, sub_w)
     if DEBUG_LOGGING and dropped > 0 then
         local sample_strs = {}
         for _, v in ipairs(samples or {}) do
