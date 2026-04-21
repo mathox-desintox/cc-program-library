@@ -18,7 +18,7 @@ configlib.run_first_run_wizard("collector")
 
 -- --- config --------------------------------------------------------------
 
-local COMPONENT_VERSION = "0.8.0"
+local COMPONENT_VERSION = "0.9.0"
 
 local all_cfg = configlib.load_all()
 local cfg     = all_cfg.collector or {}
@@ -43,22 +43,27 @@ local function find_accessor()
     return ppm.find_one(PERIPHERAL_TYPE)
 end
 
--- Read the accessor; returns nil if the critical `getEnergyLong` call
--- failed. Previous versions substituted 0 for any failed call, which
--- silently injected spurious zero samples into the pipeline and showed
--- up as chart holes interpreted as big negative rates. The other
--- (slow-changing) fields still fall back to sensible defaults so a
--- transient hiccup on any of them doesn't drop the whole sample.
-local function snapshot(accessor)
+-- Fast path: just the stored value. Called every tick so we want a
+-- SINGLE peripheral call per iteration - earlier versions did six,
+-- which pushed each loop to ~300ms and limited us to 3 samples/s even
+-- at tick_seconds = 0.05. Returns nil if the call failed so the main
+-- loop knows to drop (not zero) that tick.
+local function tick_stored(accessor)
+    local ok, v = ppm.call(accessor, "getEnergyLong")
+    if not ok then return nil end
+    return v
+end
+
+-- Slow path: the metadata the packet also ships (capacity, online,
+-- cellCount, string versions). Read once per broadcast window since
+-- none of these change at per-tick rates.
+local function snapshot_meta(accessor)
     local function safe(method)
         local ok, v = ppm.call(accessor, method)
         return ok and v or nil
     end
-    local stored = safe("getEnergyLong")
-    if stored == nil then return nil end
     return {
-        stored         = stored,
-        storedString   = safe("getEnergyString")       or tostring(stored),
+        storedString   = safe("getEnergyString")       or "0",
         capacity       = safe("getEnergyCapacityLong") or 0,
         capacityString = safe("getEnergyCapacityString") or "0",
         online         = safe("isOnline") == true,
@@ -208,66 +213,80 @@ local function main_loop()
             log.info("peripheral wrapped at " .. tostring(name))
 
             -- Sample at TICK_SECONDS, buffer, broadcast at BROADCAST_SECONDS.
-            -- The latest `reading` carries slow-changing fields (capacity,
-            -- cellCount, online, ...); the `samples` array attached to it
-            -- holds every (ts, stored) taken since the last flush so the
-            -- core sees full per-tick resolution without 20x wire traffic.
+            -- The latest stored reading feeds the batch every tick; the
+            -- slow-changing metadata (capacity, cellCount, online, ...)
+            -- is read ONCE per broadcast window rather than every tick,
+            -- because 6 peripheral calls per iteration limited us to
+            -- ~3 samples/sec regardless of TICK_SECONDS.
             --
-            -- Ticks where the peripheral call fails (or snapshot() errors)
-            -- are dropped from the batch rather than zeroed. Skip counts
-            -- are surfaced on the status canvas, shipped in the payload
-            -- for the core, and (when debug_logging) logged per flush.
+            -- Ticks where the peripheral call fails are dropped from the
+            -- batch rather than zeroed. Skip counts are surfaced on the
+            -- status canvas, shipped in the payload for the core, and
+            -- (when debug_logging) logged per flush.
             local batch = {}
             local skipped_in_batch = 0
             local last_broadcast_ms = os.epoch("utc")
             local broadcast_ms = BROADCAST_SECONDS * 1000
 
             while ppm.is_live(name) do
-                local ok, reading = pcall(snapshot, accessor)
-                if ok and reading then
-                    local sample_ts = os.epoch("utc")
-                    batch[#batch + 1] = { ts = sample_ts, stored = reading.stored }
-                    trackers.last_reading = reading
+                local ok, stored = pcall(tick_stored, accessor)
+                if ok and stored ~= nil then
+                    batch[#batch + 1] = { ts = os.epoch("utc"), stored = stored }
                 else
                     skipped_in_batch = skipped_in_batch + 1
                     trackers.total_skipped = (trackers.total_skipped or 0) + 1
                     if not ok then
-                        log.warn("snapshot error: " .. tostring(reading))
-                        mark_event("snapshot error")
+                        log.warn("tick_stored error: " .. tostring(stored))
+                        mark_event("tick read error")
                     elseif DEBUG_LOGGING then
-                        log.debug("peripheral call failed, skipping this tick")
+                        log.debug("getEnergyLong failed, skipping this tick")
                     end
                 end
 
                 local now_ms = os.epoch("utc")
-                if trackers.last_reading and #batch > 0
-                        and (now_ms - last_broadcast_ms) >= broadcast_ms then
-                    -- Piggy-back the batch onto a fresh copy of the latest
-                    -- reading so slow-changing state goes out with the ticks.
+                if #batch > 0 and (now_ms - last_broadcast_ms) >= broadcast_ms then
+                    -- Slow snapshot ONCE per broadcast. If it fails, fall
+                    -- back to the previous reading's metadata so we still
+                    -- ship a packet instead of silently dropping it.
+                    local meta_ok, meta = pcall(snapshot_meta, accessor)
+                    if not meta_ok or type(meta) ~= "table" then
+                        meta = (trackers.last_reading and {
+                            storedString   = trackers.last_reading.storedString,
+                            capacity       = trackers.last_reading.capacity,
+                            capacityString = trackers.last_reading.capacityString,
+                            online         = trackers.last_reading.online,
+                            cellCount      = trackers.last_reading.cellCount,
+                        }) or {}
+                    end
+
+                    local newest = batch[#batch]
                     local payload = {}
-                    for k, v in pairs(trackers.last_reading) do payload[k] = v end
+                    for k, v in pairs(meta) do payload[k] = v end
+                    payload.stored  = newest.stored
                     payload.samples = batch
                     payload.skipped = skipped_in_batch
                     broadcast(payload)
+
                     trackers.packets_sent       = trackers.packets_sent + 1
                     trackers.last_send_ms       = now_ms
                     trackers.last_batch_size    = #batch
                     trackers.last_batch_skipped = skipped_in_batch
+                    trackers.last_reading       = payload
                     if DEBUG_LOGGING then
-                        local b_first = batch[1] and batch[1].stored
-                        local b_last  = batch[#batch] and batch[#batch].stored
+                        local first = batch[1].stored
+                        local last  = newest.stored
+                        local dt_ms = newest.ts - batch[1].ts
                         log.debug(string.format(
-                            "batch n=%d skipped=%d first=%s last=%s delta=%s",
-                            #batch, skipped_in_batch,
-                            tostring(b_first), tostring(b_last),
-                            tostring((b_first and b_last) and (b_last - b_first) or "?")))
+                            "batch n=%d skipped=%d dt_ms=%d first=%s last=%s delta=%s",
+                            #batch, skipped_in_batch, dt_ms,
+                            tostring(first), tostring(last),
+                            tostring(last - first)))
                     end
                     batch = {}
                     skipped_in_batch = 0
                     last_broadcast_ms = now_ms
                 end
 
-                update_ui()
                 sleep(TICK_SECONDS)
             end
             trackers.accessor_live = false
@@ -280,8 +299,13 @@ local function main_loop()
 end
 
 local function render_loop()
-    update_ui()
+    -- update_ui rebuilds ui.groups from `trackers`, which can be heavy
+    -- (walks rows, allocates tables). We run it here at render cadence
+    -- (2 Hz) instead of in the tick loop where it was previously called
+    -- on every sample, which was adding non-trivial overhead to every
+    -- iteration and capping the effective sample rate.
     while true do
+        update_ui()
         local ok, layout = pcall(status.render, term, ui)
         if ok then status_layout = layout end
         sleep(0.5)

@@ -16,7 +16,7 @@ local themes    = require("graphics.themes")
 local configlib = require("common.config")
 local status    = require("common.status")
 
-local COMPONENT_VERSION = "0.8.6"
+local COMPONENT_VERSION = "0.9.0"
 
 -- First-run wizard: auto-launch `configure` on first boot so the user
 -- picks which monitor + rate unit they want before we start drawing.
@@ -192,8 +192,11 @@ end
 -- pulsed workloads.
 local OUTLIER_MULTIPLE = 50
 
--- Returns (dropped_count, median, threshold) so callers can surface the
--- filter's activity in debug logs without re-running the math.
+-- Returns (dropped_count, median, threshold, sample_values) so callers
+-- can surface the filter's activity in debug logs. `sample_values` is
+-- up to 3 of the dropped rate values themselves so we can see whether
+-- the outliers cluster around a few repeating magnitudes (real data
+-- pattern) or look random (one-off glitches).
 local function filter_outlier_rates(rates, width)
     local sorted = {}
     for b = 1, width do
@@ -205,13 +208,15 @@ local function filter_outlier_rates(rates, width)
     if median <= 0 then return 0 end
     local threshold = median * OUTLIER_MULTIPLE
     local dropped = 0
+    local samples = {}
     for b = 1, width do
         if rates[b] ~= nil and math.abs(rates[b]) > threshold then
+            if #samples < 3 then samples[#samples + 1] = rates[b] end
             rates[b] = nil
             dropped = dropped + 1
         end
     end
-    return dropped, median, threshold
+    return dropped, median, threshold, samples
 end
 
 
@@ -372,11 +377,16 @@ local function render(mon)
     -- Drop rate outliers BEFORE the cache update / chart render, so a
     -- single bad upstream sample doesn't briefly rescale the y-axis
     -- to a glitched ceiling or flash the peak stats.
-    local dropped, med, thr   = filter_outlier_rates(rates, sub_w)
+    local dropped, med, thr, samples = filter_outlier_rates(rates, sub_w)
     if DEBUG_LOGGING and dropped > 0 then
+        local sample_strs = {}
+        for _, v in ipairs(samples or {}) do
+            sample_strs[#sample_strs + 1] = string.format("%.3g", v)
+        end
         log.debug(string.format(
-            "[%s] outlier filter dropped %d rate(s) (median=%.3g threshold=%.3g)",
-            hz.key, dropped, med or 0, thr or 0))
+            "[%s] outlier filter dropped %d rate(s) median=%.3g threshold=%.3g samples=%s",
+            hz.key, dropped, med or 0, thr or 0,
+            "[" .. table.concat(sample_strs, ", ") .. "]"))
     end
 
     -- Y-axis range via nice-ceiling with hysteresis. The bounds snap to
@@ -686,11 +696,16 @@ parallel.waitForAny(
                         for _ in pairs(p.per_collector or {}) do n_col = n_col + 1 end
                         local s1 = (p.history or {}).s1 or {}
                         local s1_vals = s1.values or {}
+                        local s1_ts   = s1.ts or {}
+                        -- s1 span (ms from oldest to newest sample) tells
+                        -- us whether the core's ring is at true 1-Hz cadence
+                        -- or if batches are arriving bunched / late.
+                        local span_ms = (s1_ts[#s1_ts] or 0) - (s1_ts[1] or 0)
                         log.debug(string.format(
-                            "rx aggregate: stored=%s cap=%s collectors=%d s1_len=%d",
+                            "rx aggregate: stored=%s cap=%s collectors=%d s1_len=%d s1_span_ms=%d",
                             tostring(p.network_stored or 0),
                             tostring(p.network_capacity or 0),
-                            n_col, #s1_vals))
+                            n_col, #s1_vals, span_ms))
                     end
                 else
                     trackers.packets_dropped = trackers.packets_dropped + 1
