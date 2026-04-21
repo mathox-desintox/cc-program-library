@@ -261,9 +261,10 @@ end
 --                                                  colour inversion
 function M.hires_line_chart(mon, x, y, cell_w, cell_h, values, opts)
     opts = opts or {}
-    local pos_color = opts.pos_color or colors.lime
-    local neg_color = opts.neg_color or colors.orange
-    local bg        = opts.bg        or colors.black
+    local pos_color  = opts.pos_color  or colors.lime
+    local neg_color  = opts.neg_color  or colors.orange
+    local zero_color = opts.zero_color or colors.gray
+    local bg         = opts.bg         or colors.black
 
     local sw = cell_w * 2     -- sub-pixel columns (caller's value count)
     local sh = cell_h * 3     -- sub-pixel rows
@@ -333,6 +334,29 @@ function M.hires_line_chart(mon, x, y, cell_w, cell_h, values, opts)
     -- sub-pixel grid we'll then pack into character-cell masks.
     local pixels = {}
     for sy = 0, sh - 1 do pixels[sy] = {} end
+
+    -- Baseline (zero line) painted across EVERY sub-column first. This
+    -- gives the chart a visible structural line across its full width
+    -- even when the upstream tier is sparse enough that the leading
+    -- sub-columns have no data - without it the chart looks like it
+    -- starts partway in and the overlay axis labels read as a gutter.
+    local baseline_srow
+    if vmin >= 0 then
+        baseline_srow = sh - 1
+    elseif vmax <= 0 then
+        baseline_srow = 0
+    else
+        local frac = vmax / span
+        baseline_srow = math.floor((1 - frac) * (sh - 1) + 0.5)
+    end
+    if baseline_srow < 0 then baseline_srow = 0 end
+    if baseline_srow > sh - 1 then baseline_srow = sh - 1 end
+    for sx = 0, sw - 1 do
+        pixels[baseline_srow][sx] = "0"
+    end
+
+    -- Stair-step fill data ON TOP of the baseline; where data and the
+    -- baseline cross, the data wins (colour priority in the pack step).
     for sx = 0, sw - 1 do
         local rc = sub_rows[sx]
         if rc then
@@ -349,18 +373,23 @@ function M.hires_line_chart(mon, x, y, cell_w, cell_h, values, opts)
     -- Pack each 2x3 sub-pixel block into a character + colour pair.
     for cy = 0, cell_h - 1 do
         for cx = 0, cell_w - 1 do
-            local pos_mask, neg_mask = 0, 0
+            local pos_mask, neg_mask, zero_mask = 0, 0, 0
             for sy = 0, 2 do
                 for sxd = 0, 1 do
                     local sx = cx * 2 + sxd
                     local sy_abs = cy * 3 + sy
                     local bit = 2 ^ (sy * 2 + sxd)
                     local p = pixels[sy_abs] and pixels[sy_abs][sx]
-                    if p == "+" then pos_mask = pos_mask + bit
-                    elseif p == "-" then neg_mask = neg_mask + bit end
+                    if     p == "+" then pos_mask  = pos_mask  + bit
+                    elseif p == "-" then neg_mask  = neg_mask  + bit
+                    elseif p == "0" then zero_mask = zero_mask + bit
+                    end
                 end
             end
 
+            -- Data colour wins over baseline when they share a cell;
+            -- cells that only contain baseline pixels render gray so
+            -- the x-axis is visible even where no samples fall.
             local mask, line_color
             if pos_mask > 0 and neg_mask == 0 then
                 mask, line_color = pos_mask, pos_color
@@ -370,6 +399,8 @@ function M.hires_line_chart(mon, x, y, cell_w, cell_h, values, opts)
                 -- Mixed sign within a single cell: merge masks, pos wins
                 -- the colour choice (rare — only at zero crossings).
                 mask, line_color = pos_mask + neg_mask, pos_color
+            elseif zero_mask > 0 then
+                mask, line_color = zero_mask, zero_color
             else
                 mask = 0
             end
