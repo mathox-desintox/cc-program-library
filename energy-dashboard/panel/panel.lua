@@ -16,7 +16,7 @@ local themes    = require("graphics.themes")
 local configlib = require("common.config")
 local status    = require("common.status")
 
-local COMPONENT_VERSION = "0.8.4"
+local COMPONENT_VERSION = "0.8.5"
 
 -- First-run wizard: auto-launch `configure` on first boot so the user
 -- picks which monitor + rate unit they want before we start drawing.
@@ -179,6 +179,36 @@ local function bucket_to_rates(bucket_v, bucket_ts, width, min_dt_ms)
     return rates
 end
 
+-- Reject rate values whose magnitude is wildly out of band with the
+-- rest of the series. A single bad stored reading upstream (e.g.
+-- AppliedFlux returning a spurious value for one tick) lands in the
+-- batch average as a dip or spike; the NEXT batch is clean, so the
+-- delta between the two batches is enormous and one rate bucket shows
+-- orders of magnitude above reality. That briefly flashes peak+/peak-
+-- and pushes the chart's y-axis into the stratosphere - and also
+-- paints a red (discharge) segment for the dip half of the glitch.
+-- Filtering against the median absolute magnitude catches those cases
+-- (50x the median = clearly a glitch) without touching reasonable
+-- pulsed workloads.
+local OUTLIER_MULTIPLE = 50
+
+local function filter_outlier_rates(rates, width)
+    local sorted = {}
+    for b = 1, width do
+        if rates[b] ~= nil then sorted[#sorted + 1] = math.abs(rates[b]) end
+    end
+    if #sorted < 3 then return end
+    table.sort(sorted)
+    local median = sorted[math.ceil(#sorted / 2)]
+    if median <= 0 then return end
+    local threshold = median * OUTLIER_MULTIPLE
+    for b = 1, width do
+        if rates[b] ~= nil and math.abs(rates[b]) > threshold then
+            rates[b] = nil
+        end
+    end
+end
+
 
 -- Rate in FE/s across the whole window: prefer endpoint-based (more
 -- accurate across any gaps) falling back to the last computed rate.
@@ -334,6 +364,10 @@ local function render(mon)
     -- garbage peak+/peak-/vol values that otherwise dwarf real extremes.
     local min_dt_ms           = (window_ms / sub_w) * 0.5
     local rates               = bucket_to_rates(bucket_v, bucket_ts, sub_w, min_dt_ms)
+    -- Drop rate outliers BEFORE the cache update / chart render, so a
+    -- single bad upstream sample doesn't briefly rescale the y-axis
+    -- to a glitched ceiling or flash the peak stats.
+    filter_outlier_rates(rates, sub_w)
 
     -- Y-axis range via nice-ceiling with hysteresis. The bounds snap to
     -- values of the form s * 10^n (s in {1,2,3,5,7}) so axis labels
