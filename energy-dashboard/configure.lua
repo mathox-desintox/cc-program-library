@@ -135,6 +135,8 @@ local COLLECTOR_PAGE = component_page("collector", "Collector", {
       help = "Sub-second sample cadence. 0.05 = one MC tick (20 Hz). Lower = finer per-tick accuracy; samples are buffered locally and a batch is shipped to the core every broadcast_seconds." },
     { key = "broadcast_seconds", label = "broadcast_seconds", kind = "number",
       help = "How often the buffered sample batch is flushed to the core. Default 1.0 s. Panel data is at best this stale." },
+    { key = "debug_logging", label = "debug_logging", kind = "enum", options = { false, true },
+      help = "When on, logs each peripheral skip + per-batch stats (size, first/last stored, delta) to /edash_collector.log. Handy for diagnosing chart holes but chatty." },
 })
 
 local CORE_PAGE = component_page("core", "Core", {
@@ -146,8 +148,13 @@ local CORE_PAGE = component_page("core", "Core", {
       help = "After this many ms without an update, a collector is flagged stale on the status canvas. Default 5000." },
     { key = "state_file",            label = "state_file",   kind = "text",
       help = "Disk path for lifetime counters. Default /edash_core.dat." },
-    { key = "log_file",              label = "log_file",     kind = "text",
+    { key = "log_file",               label = "log_file",     kind = "text",
       help = "Disk path for log output. Default /edash_core.log." },
+    { key = "anomaly_delta_pct",      label = "anomaly_pct",  kind = "number",
+      help = "Fraction of capacity above which a single-tick |stored delta| is flagged as an anomaly (e.g. 0.5 = half the network). Hits the log when debug_logging is on; the anomaly count shows on the status canvas either way." },
+    { key = "debug_logging",          label = "debug_logging", kind = "enum",
+      options = { false, true },
+      help = "When on, logs per-ingest batch stats + every anomaly to /edash_core.log. Use to diagnose chart data quality issues." },
 })
 
 local PANEL_PAGE = component_page("panel", "Panel", {
@@ -164,6 +171,9 @@ local PANEL_PAGE = component_page("panel", "Panel", {
     { key = "default_horizon", label = "default_horizon", kind = "enum",
       options = { "m1", "m5", "m15", "h1", "h8", "h24" },
       help = "Which time window the chart/stats use at startup. Click tabs on the monitor to change live." },
+    { key = "debug_logging",   label = "debug_logging",   kind = "enum",
+      options = { false, true },
+      help = "When on, logs per-render chart stats to /edash_panel.log." },
 })
 
 -- --- installed-components detection -------------------------------------

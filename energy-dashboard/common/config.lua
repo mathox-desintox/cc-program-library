@@ -32,6 +32,7 @@ M.DEFAULTS = {
                                     -- taken since the previous flush, so the
                                     -- core sees full per-tick resolution
                                     -- with only 1 packet/sec of wire traffic.
+        debug_logging     = false, -- log each skipped tick + batch stats
     },
     core = {
         broadcast_interval_ms = 1000,
@@ -39,6 +40,9 @@ M.DEFAULTS = {
         stale_ms              = 5000,
         state_file            = "/edash_core.dat",
         log_file              = "/edash_core.log",
+        debug_logging         = false,  -- log per-ingest stats + anomalies
+        anomaly_delta_pct     = 0.5,    -- flag samples whose |stored delta|
+                                         -- exceeds this fraction of capacity
     },
     panel = {
         monitor          = nil,        -- auto-pick first monitor if nil
@@ -47,6 +51,7 @@ M.DEFAULTS = {
         stale_ms         = 5000,
         theme            = "default",
         default_horizon  = "m5",       -- m1/m5/m15/h1/h8/h24 (clickable tab)
+        debug_logging    = false,      -- log per-render chart stats
     },
 }
 

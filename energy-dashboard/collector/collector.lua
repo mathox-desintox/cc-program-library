@@ -18,7 +18,7 @@ configlib.run_first_run_wizard("collector")
 
 -- --- config --------------------------------------------------------------
 
-local COMPONENT_VERSION = "0.7.0"
+local COMPONENT_VERSION = "0.7.9"
 
 local all_cfg = configlib.load_all()
 local cfg     = all_cfg.collector or {}
@@ -28,6 +28,7 @@ local BROADCAST_SECONDS = cfg.broadcast_seconds or 1.0
 local RETRY_SECONDS     = 5
 local PERIPHERAL_TYPE   = "flux_accessor_ext"
 local PREFERRED_PNAME   = cfg.peripheral
+local DEBUG_LOGGING     = cfg.debug_logging == true
 
 comms.set_network_id(NETWORK_ID)
 
@@ -42,14 +43,22 @@ local function find_accessor()
     return ppm.find_one(PERIPHERAL_TYPE)
 end
 
+-- Read the accessor; returns nil if the critical `getEnergyLong` call
+-- failed. Previous versions substituted 0 for any failed call, which
+-- silently injected spurious zero samples into the pipeline and showed
+-- up as chart holes interpreted as big negative rates. The other
+-- (slow-changing) fields still fall back to sensible defaults so a
+-- transient hiccup on any of them doesn't drop the whole sample.
 local function snapshot(accessor)
     local function safe(method)
         local ok, v = ppm.call(accessor, method)
         return ok and v or nil
     end
+    local stored = safe("getEnergyLong")
+    if stored == nil then return nil end
     return {
-        stored         = safe("getEnergyLong")         or 0,
-        storedString   = safe("getEnergyString")       or "0",
+        stored         = stored,
+        storedString   = safe("getEnergyString")       or tostring(stored),
         capacity       = safe("getEnergyCapacityLong") or 0,
         capacityString = safe("getEnergyCapacityString") or "0",
         online         = safe("isOnline") == true,
@@ -75,13 +84,16 @@ local ui = {
 
 -- Trackers updated by the main loop, rendered into ui.groups by update_ui().
 local trackers = {
-    modem_sides   = {},
-    accessor_name = nil,
-    accessor_live = false,
-    packets_sent  = 0,
-    last_send_ms  = 0,
-    last_reading  = nil,
-    last_event    = "",
+    modem_sides        = {},
+    accessor_name      = nil,
+    accessor_live      = false,
+    packets_sent       = 0,
+    last_send_ms       = 0,
+    last_reading       = nil,
+    last_batch_size    = 0,   -- sub-second samples shipped in the last batch
+    last_batch_skipped = 0,   -- ticks where the peripheral call failed (in same batch)
+    total_skipped      = 0,   -- cumulative since startup
+    last_event         = "",
 }
 
 local function set_status(text, color) ui.status = { text = text, color = color } end
@@ -125,6 +137,12 @@ local function update_ui()
     send_rows[#send_rows + 1] = { label = "tick",       value = tostring(TICK_SECONDS) .. "s" }
     send_rows[#send_rows + 1] = { label = "flush",      value = tostring(BROADCAST_SECONDS) .. "s" }
     send_rows[#send_rows + 1] = { label = "batch last", value = tostring(trackers.last_batch_size or 0) }
+    local skip_bullet = trackers.total_skipped > 0 and bullet_no or bullet_ok
+    send_rows[#send_rows + 1] = {
+        label = "skipped", bullet = skip_bullet[1], bullet_color = skip_bullet[2],
+        value = string.format("%d last / %d total",
+            trackers.last_batch_skipped or 0, trackers.total_skipped or 0),
+    }
 
     local reading_rows
     if trackers.last_reading then
@@ -149,7 +167,7 @@ end
 
 -- --- main logic ----------------------------------------------------------
 
-log.init("collector", log.LEVEL.INFO, "/edash_collector.log")
+log.init("collector", DEBUG_LOGGING and log.LEVEL.DEBUG or log.LEVEL.INFO, "/edash_collector.log")
 log.silence_terminal(true)
 log.info("collector " .. COMPONENT_VERSION .. " starting")
 log.info(string.format("config: tick=%ss flush=%ss network_id=%s peripheral=%s",
@@ -192,7 +210,13 @@ local function main_loop()
             -- cellCount, online, ...); the `samples` array attached to it
             -- holds every (ts, stored) taken since the last flush so the
             -- core sees full per-tick resolution without 20x wire traffic.
+            --
+            -- Ticks where the peripheral call fails (or snapshot() errors)
+            -- are dropped from the batch rather than zeroed. Skip counts
+            -- are surfaced on the status canvas, shipped in the payload
+            -- for the core, and (when debug_logging) logged per flush.
             local batch = {}
+            local skipped_in_batch = 0
             local last_broadcast_ms = os.epoch("utc")
             local broadcast_ms = BROADCAST_SECONDS * 1000
 
@@ -203,8 +227,14 @@ local function main_loop()
                     batch[#batch + 1] = { ts = sample_ts, stored = reading.stored }
                     trackers.last_reading = reading
                 else
-                    log.warn("snapshot error: " .. tostring(reading))
-                    mark_event("snapshot error")
+                    skipped_in_batch = skipped_in_batch + 1
+                    trackers.total_skipped = (trackers.total_skipped or 0) + 1
+                    if not ok then
+                        log.warn("snapshot error: " .. tostring(reading))
+                        mark_event("snapshot error")
+                    elseif DEBUG_LOGGING then
+                        log.debug("peripheral call failed, skipping this tick")
+                    end
                 end
 
                 local now_ms = os.epoch("utc")
@@ -215,11 +245,23 @@ local function main_loop()
                     local payload = {}
                     for k, v in pairs(trackers.last_reading) do payload[k] = v end
                     payload.samples = batch
+                    payload.skipped = skipped_in_batch
                     broadcast(payload)
-                    trackers.packets_sent    = trackers.packets_sent + 1
-                    trackers.last_send_ms    = now_ms
-                    trackers.last_batch_size = #batch
+                    trackers.packets_sent       = trackers.packets_sent + 1
+                    trackers.last_send_ms       = now_ms
+                    trackers.last_batch_size    = #batch
+                    trackers.last_batch_skipped = skipped_in_batch
+                    if DEBUG_LOGGING then
+                        local b_first = batch[1] and batch[1].stored
+                        local b_last  = batch[#batch] and batch[#batch].stored
+                        log.debug(string.format(
+                            "batch n=%d skipped=%d first=%s last=%s delta=%s",
+                            #batch, skipped_in_batch,
+                            tostring(b_first), tostring(b_last),
+                            tostring((b_first and b_last) and (b_last - b_first) or "?")))
+                    end
                     batch = {}
+                    skipped_in_batch = 0
                     last_broadcast_ms = now_ms
                 end
 

@@ -15,7 +15,7 @@ local util      = require("common.util")
 local configlib = require("common.config")
 local status    = require("common.status")
 
-local COMPONENT_VERSION = "0.7.7"
+local COMPONENT_VERSION = "0.7.9"
 
 -- First-run wizard: auto-launch `configure` on first boot so intervals,
 -- state-file path, and log-file path can be adjusted before anything
@@ -32,6 +32,11 @@ local PERSIST_INTERVAL_MS   = cfg.persist_interval_ms   or 30000
 local STALE_MS              = cfg.stale_ms              or 5000
 local STATE_FILE            = cfg.state_file            or "/edash_core.dat"
 local LOG_FILE              = cfg.log_file              or "/edash_core.log"
+local DEBUG_LOGGING         = cfg.debug_logging == true
+-- Flag a per-sample delta as "suspicious" when it moves more than this
+-- fraction of the network capacity in a single tick. Tunable via config
+-- for grids with unusually spiky workloads.
+local ANOMALY_DELTA_PCT     = cfg.anomaly_delta_pct     or 0.5
 
 -- Stamp our team id onto every outgoing packet; drop any incoming with a
 -- mismatched id. Isolates multiple dashboards broadcasting on the same
@@ -100,6 +105,23 @@ local net_samples_since_1m = 0
 local net_samples_since_5m = 0
 local net_samples_since_1h = 0
 local net_samples_since_6h = 0
+
+-- Runtime counters. Declared up here (instead of alongside the status
+-- canvas block near the bottom) so ingest() can bump the skip /
+-- anomaly tallies as they happen.
+local trackers = {
+    modem_sides        = {},
+    packets_received   = 0,
+    packets_dropped    = 0,   -- invalid / wrong network_id
+    aggregates_sent    = 0,
+    last_ingest_ms     = 0,
+    last_broadcast_ms  = 0,
+    last_persist_ms    = 0,
+    last_aggregate     = nil, -- the last aggregate payload
+    samples_skipped    = 0,   -- ticks the upstream collectors dropped
+    sample_anomalies   = 0,   -- per-tick deltas > ANOMALY_DELTA_PCT of capacity
+    last_event         = "",
+}
 
 -- --- disk persistence ----------------------------------------------------
 
@@ -277,14 +299,40 @@ local function ingest(msg)
         samples = { { ts = msg.ts, stored = msg.payload.stored or 0 } }
     end
 
+    -- Track how many ticks the collector SKIPPED (peripheral call failed
+    -- on its side) since the last flush. Exposed via trackers so the
+    -- core's status canvas can raise a visible warning when upstream
+    -- data quality is degrading.
+    trackers.samples_skipped = (trackers.samples_skipped or 0)
+                             + (msg.payload.skipped or 0)
+
     -- Lifetime counters track the per-tick delta across every sample in
     -- the batch so no produced/consumed energy is missed when we later
     -- average the batch down into a single ring entry.
+    --
+    -- While we're at it, flag deltas larger than ANOMALY_DELTA_PCT of
+    -- capacity - those typically mean the peripheral returned a bad
+    -- value (stored briefly reported as 0 or max_int, then corrected)
+    -- and are the main source of chart holes interpreted as huge
+    -- negative / positive rates.
+    local capacity = msg.payload.capacity or 0
+    local anomaly_threshold = capacity * ANOMALY_DELTA_PCT
+    local batch_anomalies = 0
     local sum = 0
     for _, s in ipairs(samples) do
         local v = s.stored or 0
         if entry.last_tick_stored ~= nil then
             local delta = v - entry.last_tick_stored
+            if capacity > 0 and math.abs(delta) > anomaly_threshold then
+                batch_anomalies = batch_anomalies + 1
+                trackers.sample_anomalies = (trackers.sample_anomalies or 0) + 1
+                if DEBUG_LOGGING then
+                    log.debug(string.format(
+                        "anomaly collector=%s prev=%.0f curr=%.0f delta=%.0f (%.1f%% of cap)",
+                        tostring(msg.src.id), entry.last_tick_stored, v, delta,
+                        math.abs(delta) / capacity * 100))
+                end
+            end
             if delta > 0 then
                 entry.lifetime_produced_fe = entry.lifetime_produced_fe + delta
                 lifetime.produced_fe       = lifetime.produced_fe + delta
@@ -295,6 +343,13 @@ local function ingest(msg)
         end
         entry.last_tick_stored = v
         sum = sum + v
+    end
+
+    if DEBUG_LOGGING then
+        log.debug(string.format(
+            "ingest collector=%s batch=%d skipped=%d anomalies=%d first=%.0f last=%.0f",
+            tostring(msg.src.id), #samples, msg.payload.skipped or 0, batch_anomalies,
+            samples[1].stored or 0, samples[#samples].stored or 0))
     end
 
     -- Push a single averaged entry to the 1s ring. Timestamp is the
@@ -509,18 +564,6 @@ local ui = {
     footer       = "",
 }
 
-local trackers = {
-    modem_sides        = {},
-    packets_received   = 0,
-    packets_dropped    = 0,  -- invalid / wrong network_id
-    aggregates_sent    = 0,
-    last_ingest_ms     = 0,
-    last_broadcast_ms  = 0,
-    last_persist_ms    = 0,
-    last_aggregate     = nil,  -- the last aggregate payload
-    last_event         = "",
-}
-
 local function set_status(text, color) ui.status = { text = text, color = color } end
 local function mark_event(text)        trackers.last_event = text; ui.footer = text end
 
@@ -581,6 +624,26 @@ local function update_ui()
     }
     if trackers.packets_dropped > 0 then
         stats_rows[#stats_rows + 1] = { label = "dropped", value = tostring(trackers.packets_dropped), bullet = bullet_wait[1], bullet_color = bullet_wait[2] }
+    end
+    if (trackers.samples_skipped or 0) > 0 then
+        stats_rows[#stats_rows + 1] = {
+            label = "upstream skipped",
+            value = tostring(trackers.samples_skipped),
+            bullet = bullet_wait[1], bullet_color = bullet_wait[2],
+        }
+    end
+    if (trackers.sample_anomalies or 0) > 0 then
+        stats_rows[#stats_rows + 1] = {
+            label = "anomalies",
+            value = tostring(trackers.sample_anomalies),
+            bullet = bullet_err[1], bullet_color = bullet_err[2],
+        }
+    end
+    if DEBUG_LOGGING then
+        stats_rows[#stats_rows + 1] = {
+            label = "debug", value = "on",
+            bullet = bullet_wait[1], bullet_color = bullet_wait[2],
+        }
     end
 
     -- Totals group (from last aggregate we broadcast)
@@ -643,7 +706,7 @@ end
 
 -- --- main ----------------------------------------------------------------
 
-log.init("core", log.LEVEL.INFO, LOG_FILE)
+log.init("core", DEBUG_LOGGING and log.LEVEL.DEBUG or log.LEVEL.INFO, LOG_FILE)
 log.silence_terminal(true)
 log.info("core " .. COMPONENT_VERSION .. " starting")
 

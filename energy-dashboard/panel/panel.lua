@@ -16,7 +16,7 @@ local themes    = require("graphics.themes")
 local configlib = require("common.config")
 local status    = require("common.status")
 
-local COMPONENT_VERSION = "0.7.8"
+local COMPONENT_VERSION = "0.7.9"
 
 -- First-run wizard: auto-launch `configure` on first boot so the user
 -- picks which monitor + rate unit they want before we start drawing.
@@ -34,6 +34,7 @@ local PREFERRED_MONITOR = cfg.monitor               -- nil = auto-pick first
 local THEME_NAME        = cfg.theme or "default"
 local THEME             = themes[THEME_NAME] or themes.default
 local P                 = themes.pairs(THEME)
+local DEBUG_LOGGING     = cfg.debug_logging == true
 
 -- Stamp outgoing packets (future commands / pings) and drop mismatched
 -- incoming aggregates. Isolates multiple dashboards on the same
@@ -532,7 +533,7 @@ end
 
 -- --- main ----------------------------------------------------------------
 
-log.init("panel", log.LEVEL.INFO, "/edash_panel.log")
+log.init("panel", DEBUG_LOGGING and log.LEVEL.DEBUG or log.LEVEL.INFO, "/edash_panel.log")
 log.silence_terminal(true)
 log.info("panel " .. COMPONENT_VERSION .. " starting")
 
