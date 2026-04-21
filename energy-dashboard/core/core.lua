@@ -15,7 +15,7 @@ local util      = require("common.util")
 local configlib = require("common.config")
 local status    = require("common.status")
 
-local COMPONENT_VERSION = "0.9.1"
+local COMPONENT_VERSION = "0.9.2"
 
 -- First-run wizard: auto-launch `configure` on first boot so intervals,
 -- state-file path, and log-file path can be adjusted before anything
@@ -105,6 +105,12 @@ local net_samples_since_1m = 0
 local net_samples_since_5m = 0
 local net_samples_since_1h = 0
 local net_samples_since_6h = 0
+
+-- Remember the last value push_network_sample received so broadcast_aggregate
+-- can dedup: when broadcast cadence catches the same history_1s[1] twice
+-- in a row, we'd otherwise add a delta-0 pair to the ring that renders as
+-- a visible 0-rate dip on the panel chart.
+local last_pushed_stored = nil
 
 -- Runtime counters. Declared up here (instead of alongside the status
 -- canvas block near the bottom) so ingest() can bump the skip /
@@ -706,8 +712,17 @@ local function broadcast_aggregate()
     -- network_capacity / bucket_ms ≈ 1e14 FE/s, which is exactly the
     -- persistent outlier pattern we were catching with the 50x-median
     -- filter. Same applies to any gap where all collectors went stale.
-    if payload.any_collector then
-        push_network_sample(payload.network_stored_avg or payload.network_stored or 0, now_ms)
+    -- Also dedup: if the aggregator returned the EXACT same stored_avg
+    -- we pushed last time, this broadcast fired < one ingest cycle
+    -- after the previous one and is reading the same history_1s[1].
+    -- Pushing the dup creates a 1s-apart pair in the network ring
+    -- with delta=0; when that pair straddles a panel sub-bucket it
+    -- renders as a visible chart dip to the 0-rate baseline.
+    -- Skipping instead gives the ring evenly-spaced unique samples.
+    local new_stored = payload.network_stored_avg or payload.network_stored or 0
+    if payload.any_collector and new_stored ~= last_pushed_stored then
+        push_network_sample(new_stored, now_ms)
+        last_pushed_stored = new_stored
     end
     -- Ship wall-clock timestamps on EVERY tier. Reconstructing ts from
     -- interval_ms at the panel silently miscomputes rates whenever
