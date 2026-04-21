@@ -16,7 +16,7 @@ local themes    = require("graphics.themes")
 local configlib = require("common.config")
 local status    = require("common.status")
 
-local COMPONENT_VERSION = "0.7.5"
+local COMPONENT_VERSION = "0.7.6"
 
 -- First-run wizard: auto-launch `configure` on first boot so the user
 -- picks which monitor + rate unit they want before we start drawing.
@@ -252,20 +252,25 @@ local function render(mon)
     local tier = (agg.history or {})[hz.tier]
     local stored_vals, stored_ts = tail_series(tier, hz.count)
     local window_ms = hz.window_s * 1000
-    local bucket_v, bucket_ts = bucket_stored(stored_vals, stored_ts, chart_w, window_ms)
-    -- Reject rate pairs whose dt is under half a bucket-width: those
-    -- are always artefacts of two buckets happening to anchor on samples
-    -- close in time, and they're the main source of the garbage
-    -- peak+/peak-/vol values that otherwise dwarf real extremes.
-    local min_dt_ms           = (window_ms / chart_w) * 0.5
-    local rates               = bucket_to_rates(bucket_v, bucket_ts, chart_w, min_dt_ms)
+    -- Bucket at TWICE the cell width so each hires sub-column carries
+    -- its own real rate value instead of an interpolation between cells.
+    -- The chart's 2x horizontal teletext resolution is only meaningful
+    -- when the upstream data has that resolution available.
+    local sub_w               = chart_w * 2
+    local bucket_v, bucket_ts = bucket_stored(stored_vals, stored_ts, sub_w, window_ms)
+    -- Reject rate pairs whose dt is under half a sub-bucket-width:
+    -- those are always artefacts of two buckets happening to anchor on
+    -- samples close in time, and they're the main source of the
+    -- garbage peak+/peak-/vol values that otherwise dwarf real extremes.
+    local min_dt_ms           = (window_ms / sub_w) * 0.5
+    local rates               = bucket_to_rates(bucket_v, bucket_ts, sub_w, min_dt_ms)
 
     -- Pre-compute the y-axis range so the chart and the axis labels
     -- agree. Rule per user spec:
     --   all positive / zero      : vmin = 0, vmax = 1.125 * max
     --   all negative             : vmin = 1.125 * min, vmax = 0
     --   mixed                    : vmin = 1.125 * min, vmax = 1.125 * max
-    local rstats = chart.stats_sparse(rates, chart_w) or {}  -- nil when no data
+    local rstats = chart.stats_sparse(rates, sub_w) or {}    -- nil when no data
     local vmin, vmax = 0, 1
     if rstats.n and rstats.n > 0 then
         if rstats.min >= 0 then

@@ -246,9 +246,13 @@ end
 -- resolution vs. the plain line_chart. The character set at \128..\159
 -- covers 32 of the 64 possible 6-bit sub-pixel masks; masks with bit 5
 -- (bottom-right sub-pixel) set are rendered via the complement + colour-
--- swap trick below. Accepts either one value per cell (cell_w entries)
--- and interpolates mid-cell values for smoother horizontal transitions,
--- or a sparse array with some entries nil for natural gaps.
+-- swap trick below.
+--
+-- Caller MUST supply `values` as a sparse array indexed 1..cell_w*2,
+-- one entry per sub-column (left sub-col of cell 1 at index 1, right
+-- sub-col of cell 1 at index 2, ...). That lets the caller's bucketing
+-- drive the full horizontal resolution the chart can display; nil
+-- entries render as gaps.
 --
 --    sub-pixel bit layout within a cell:
 --       bit 0 | bit 1      (top row, sub_y=0)
@@ -261,7 +265,7 @@ function M.hires_line_chart(mon, x, y, cell_w, cell_h, values, opts)
     local neg_color = opts.neg_color or colors.orange
     local bg        = opts.bg        or colors.black
 
-    local sw = cell_w * 2     -- sub-pixel columns
+    local sw = cell_w * 2     -- sub-pixel columns (caller's value count)
     local sh = cell_h * 3     -- sub-pixel rows
 
     -- Clear the cell area to bg first so unpainted cells stay clean.
@@ -272,7 +276,7 @@ function M.hires_line_chart(mon, x, y, cell_w, cell_h, values, opts)
         mon.write(blank)
     end
 
-    local s = stats_sparse(values, cell_w)
+    local s = stats_sparse(values, sw)
     if not s then return nil end
 
     -- Caller can pin the y range via opts.ymin/ymax (used when the chart
@@ -305,24 +309,15 @@ function M.hires_line_chart(mon, x, y, cell_w, cell_h, values, opts)
         return sh - 1 - math.floor(frac * (sh - 1) + 0.5)
     end
 
-    -- For each cell c, sub-col 0 anchors on values[c]; sub-col 1 sits at
-    -- the mid-point with values[c+1] so adjacent cells connect smoothly.
+    -- Each sub-column takes its own value directly from `values`. Index
+    -- i (1-based) maps to sub_x = i - 1 (0-based). Missing entries stay
+    -- unset so the stair-step fill below naturally skips them.
     local sub_rows, sub_sign = {}, {}
-    for c = 1, cell_w do
-        local v = values[c]
+    for i = 1, sw do
+        local v = values[i]
         if v ~= nil then
-            local left_sx  = (c - 1) * 2       -- 0-indexed
-            local right_sx = (c - 1) * 2 + 1
-            sub_rows[left_sx]  = row_for(v)
-            sub_sign[left_sx]  = (v >= 0) and "+" or "-"
-            local v_next = values[c + 1]
-            if v_next ~= nil then
-                sub_rows[right_sx] = row_for((v + v_next) / 2)
-                sub_sign[right_sx] = ((v + v_next) >= 0) and "+" or "-"
-            else
-                sub_rows[right_sx] = sub_rows[left_sx]
-                sub_sign[right_sx] = sub_sign[left_sx]
-            end
+            sub_rows[i - 1] = row_for(v)
+            sub_sign[i - 1] = (v >= 0) and "+" or "-"
         end
     end
 
